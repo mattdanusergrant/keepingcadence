@@ -21,3 +21,16 @@ Live at: https://app.keepingcadence.com
 Cloud is configured in the `CLOUD` block near the top of `app.html`'s script
 (`authBase` + `dataApi`). Signed out, the app stays fully local; anonymous
 sharing always uses the client-side `#s=` hash link (no server involved).
+
+## Tests
+
+The load-bearing pure logic — time math, legacy-data migration, day
+normalisation, and the `#s=` share-link round-trip — is covered by a
+dependency-free smoke test. It reads `app.html`'s inline `<script>`, runs it in a
+Node `vm` behind a minimal DOM/localStorage stub, and asserts the pure core:
+
+```bash
+node test/smoke.js
+```
+
+CI runs it on every push and pull request (`.github/workflows/test.yml`).

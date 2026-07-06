@@ -33,7 +33,9 @@
 
 ## Ranked improvements
 
-### 1. Port the ronin-survivor smoke test + GitHub Actions CI to this repo  `impact 5/5 · effort M`
+### 1. Port the ronin-survivor smoke test + GitHub Actions CI to this repo  `impact 5/5 · effort M`  ✅ **done 2026-07-06**
+
+> Shipped: `test/smoke.js` (22 assertions over the pure core — hhmm↔minutes round-trip, legacyRangeToBlocks, normalizeDay, migrateState across all three legacy shapes, encode/decode hash round-trip, escapeHtml, daySegments, toggleBlock, fmtHoursNumber) loaded in a Node `vm` behind a DOM/localStorage stub, plus `.github/workflows/test.yml` running it on push/PR. Deferred: the live SQL merge-assertion against a scratch Neon branch (needs DB credentials, not offline-runnable in CI here) and the flushSaves branching test (couples to too much module state to isolate cleanly — better paired with improvement #2's refactor).
 
 **Why:** A live app with cloud-sync merge logic and zero automated checks is the repo's single biggest gap; he already built the exact pattern needed (dependency-free Node smoke test driving an inline <script> behind a DOM stub) in ronin-survivor's test/smoke.js and .github/workflows/test.yml.
 
