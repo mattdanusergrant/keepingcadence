@@ -43,7 +43,9 @@
 
 **Career angle:** Directly answers the one question a hiring manager will ask of this repo ('where are the tests?') and demonstrates transferable CI discipline across projects.
 
-### 2. Surface sync status and stop swallowing save failures  `impact 5/5 · effort M`
+### 2. Surface sync status and stop swallowing save failures  `impact 5/5 · effort M`  ✅ **done 2026-07-06**
+
+> Shipped: `flushSaves` now returns a result and no longer swallows errors. A persisted dirty-set (`keepingcadence-dirty`) tracks unsynced schedule ids; the saved indicator reflects real cloud state — Saving… / Synced / "Offline — saved on this device" / "Sync failed" — with a Retry button (`#retrySyncBtn`) for the offline/error states. `cloudPull` no longer clobbers schedules still in the dirty-set, so an offline edit survives the next pull. EN/ES strings added. Verified in Chromium against a mocked Neon backend: edit→Synced, offline edit→Offline+retry+dirty, retry→Synced+clean.
 
 **Why:** flushSaves() (app.html:2166) silently discards errors, so users can lose 'saved' work; trust is the whole product for a scheduling app.
 
@@ -67,7 +69,9 @@
 
 **Career angle:** Concurrency control in a distributed-ish system is a classic senior-engineer signal, implemented here in ~40 lines of SQL+JS.
 
-### 5. Fix the flushSaves week-capture race  `impact 4/5 · effort S`
+### 5. Fix the flushSaves week-capture race  `impact 4/5 · effort S`  ✅ **done 2026-07-06**
+
+> Shipped: `flushSaves` now takes a synchronous snapshot before its first `await` — the week plus a deep copy of each schedule's days — and iterates the snapshot, so navigating to another week mid-flush can no longer persist the new week's hours under the old `week_start`. Verified in Chromium: started a (delayed) flush on one week, switched weeks while it was in flight, and the save still landed on the original week.
 
 **Why:** flushSaves reads state.weekStart once but awaits network calls against live schedule objects (app.html:2168-2196); switching weeks mid-flush can write the new week's days under the old week key.
 

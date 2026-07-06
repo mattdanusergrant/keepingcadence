@@ -100,7 +100,7 @@ vm.runInContext(scriptSrc, ctx, { filename: 'app.html#script' });
 const {
   hhmmToMinutes, minutesToHhmm, legacyRangeToBlocks, normalizeDay,
   migrateState, encodeStateToHash, decodeStateFromHash, escapeHtml,
-  daySegments, toggleBlock, fmtHoursNumber
+  daySegments, toggleBlock, fmtHoursNumber, isNetworkError, loadDirtyIds
 } = ctx;
 
 // --- Tiny test runner -------------------------------------------------------
@@ -296,6 +296,32 @@ test('fmtHoursNumber trims trailing zeros and floors invalid input', () => {
   assert.strictEqual(fmtHoursNumber(2.25), '2.25');
   assert.strictEqual(fmtHoursNumber(-1), '0');
   assert.strictEqual(fmtHoursNumber('x'), '0');
+});
+
+// --- sync status: offline vs. server error classification -------------------
+
+test('isNetworkError treats a failed fetch as offline, a bad status as error', () => {
+  assert.strictEqual(isNetworkError(new TypeError('Failed to fetch')), true);
+  assert.strictEqual(isNetworkError(new Error('network request failed')), true);
+  assert.strictEqual(isNetworkError(new Error('Data API HTTP 500')), false);
+  assert.strictEqual(isNetworkError(new Error('stale write')), false);
+});
+
+// --- dirty-set persistence (unsynced edits survive a reload) ----------------
+
+test('loadDirtyIds restores the persisted set of unsynced schedule ids', () => {
+  sandbox.localStorage.setItem('keepingcadence-dirty', JSON.stringify(['sched-a', 'sched-b']));
+  const s = loadDirtyIds();
+  assert.strictEqual(s.size, 2);
+  assert(s.has('sched-a') && s.has('sched-b'));
+  sandbox.localStorage.removeItem('keepingcadence-dirty');
+});
+
+test('loadDirtyIds tolerates a missing or corrupt entry', () => {
+  assert.strictEqual(loadDirtyIds().size, 0);
+  sandbox.localStorage.setItem('keepingcadence-dirty', 'not json');
+  assert.strictEqual(loadDirtyIds().size, 0);
+  sandbox.localStorage.removeItem('keepingcadence-dirty');
 });
 
 // --- Report -----------------------------------------------------------------
