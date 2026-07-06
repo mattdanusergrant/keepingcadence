@@ -142,5 +142,38 @@ begin
   if n <> 80 then raise exception 'FAIL: schedule name not capped at 80 (got %)', n; end if;
   if n2 <> 32 then raise exception 'FAIL: schedule color not capped at 32 (got %)', n2; end if;
 
+  -- ========================================================================
+  -- #7 — free-tier member limit (paywall enforced in Postgres)
+  -- ========================================================================
+  declare
+    v_pteam uuid;
+  begin
+    v_pteam := (kc_private._create_team('owner-1', 'Cap Test')).id;  -- free plan
+    -- Fill to the free cap (3 members).
+    insert into profiles (user_id, email) values ('m1','m1@x.com'),('m2','m2@x.com'),
+      ('m3','m3@x.com'),('m4','m4@x.com') on conflict do nothing;
+    insert into team_members (team_id, user_id, email) values
+      (v_pteam,'m1','m1@x.com'),(v_pteam,'m2','m2@x.com'),(v_pteam,'m3','m3@x.com');
+
+    -- A 4th invite on a free team is blocked (PT402).
+    ok := false;
+    begin perform kc_private._invite_to_team('owner-1', v_pteam, 'm4@x.com');
+    exception when others then ok := (sqlerrm like '%member limit%'); end;
+    if not ok then raise exception 'FAIL: free team allowed inviting past the cap'; end if;
+
+    -- Joining past the cap is blocked at the authoritative point too.
+    ok := false;
+    begin perform kc_private._join_by_token('m4', (select join_token from teams where id = v_pteam));
+    exception when others then ok := (sqlerrm like '%member limit%'); end;
+    if not ok then raise exception 'FAIL: free team allowed joining past the cap'; end if;
+
+    -- Upgrading to pro lifts the cap: the same join now succeeds.
+    update teams set plan = 'pro' where id = v_pteam;
+    perform kc_private._join_by_token('m4', (select join_token from teams where id = v_pteam));
+    if (select count(*) from team_members where team_id = v_pteam) <> 4 then
+      raise exception 'FAIL: pro upgrade did not lift the member cap';
+    end if;
+  end;
+
   raise notice 'ALL SQL TESTS PASSED';
 end $$;

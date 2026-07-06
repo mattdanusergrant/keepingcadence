@@ -70,6 +70,7 @@ create table teams (
   owner_id    text not null,
   name        text not null,
   join_token  uuid not null default gen_random_uuid(),  -- secret; builds the invite link
+  plan        text not null default 'free' check (plan in ('free', 'pro')),  -- set only by the billing webhook
   created_at  timestamptz not null default now()
 );
 create index idx_teams_owner on teams(owner_id);
@@ -236,6 +237,31 @@ begin
 end $$;
 
 -- ===========================================================================
+-- Billing / free-tier limit. The paywall lives in Postgres like every other
+-- rule: a free team caps how many members it can hold; 'pro' (set only by the
+-- Stripe webhook, via a privileged connection — never a user-callable RPC)
+-- lifts the cap. Enforced at every point a member is actually added, so it can't
+-- be bypassed by hitting an RPC directly.
+-- ===========================================================================
+create or replace function kc_private._member_limit_for(p_plan text)
+returns int language sql immutable as $$
+  select case when p_plan = 'pro' then 1000000 else 3 end;   -- free = up to 3 joined members
+$$;
+
+-- Raise (PT402 -> HTTP 402 Payment Required) if the team is at its member cap.
+create or replace function kc_private._guard_member_limit(p_team_id uuid)
+returns void language plpgsql security definer set search_path = public as $$
+  declare v_plan text; v_count int; v_limit int;
+begin
+  select plan into v_plan from teams where id = p_team_id;
+  v_limit := kc_private._member_limit_for(v_plan);
+  select count(*) into v_count from team_members where team_id = p_team_id;
+  if v_count >= v_limit then
+    raise exception 'team member limit reached — upgrade to add more' using errcode = 'PT402';
+  end if;
+end $$;
+
+-- ===========================================================================
 -- Workers (kc_private, SECURITY DEFINER) — original privileged logic; they trust
 -- p_uid, which the public wrappers derive from the verified JWT.
 -- ===========================================================================
@@ -288,6 +314,7 @@ begin
   if not exists (select 1 from teams where id = p_team_id and owner_id = p_uid) then
     raise exception 'not your team';
   end if;
+  perform kc_private._guard_member_limit(p_team_id);  -- early feedback before inviting
   insert into team_invites (team_id, email) values (p_team_id, lower(p_email))
   on conflict (team_id, email) do update set status = 'pending', created_at = now();
 end $$;
@@ -300,6 +327,7 @@ begin
   select * into inv from team_invites
     where id = p_invite_id and email = my_email and status = 'pending';
   if inv is null then raise exception 'invite not found'; end if;
+  perform kc_private._guard_member_limit(inv.team_id);  -- authoritative check at join time
   insert into team_members (team_id, user_id, email)
     values (inv.team_id, p_uid, my_email)
     on conflict (team_id, user_id) do update set email = excluded.email;
@@ -485,6 +513,10 @@ begin
   if tm is null then raise exception 'invalid or expired invite link'; end if;
   select email into my_email from profiles where user_id = p_uid;
   if tm.owner_id <> p_uid then
+    -- only counts against the cap when actually adding a new member (not a re-join)
+    if not exists (select 1 from team_members where team_id = tm.id and user_id = p_uid) then
+      perform kc_private._guard_member_limit(tm.id);
+    end if;
     insert into team_members (team_id, user_id, email)
     values (tm.id, p_uid, my_email)
     on conflict (team_id, user_id) do update set email = excluded.email;
@@ -583,7 +615,7 @@ grant usage on schema public to authenticated;
 grant usage on schema kc_private to authenticated;
 grant select on profiles, team_members, schedules, weeks, team_invites to authenticated;
 -- teams: every column except join_token (the invite secret; owners fetch it via RPC)
-grant select (id, owner_id, name, created_at) on teams to authenticated;
+grant select (id, owner_id, name, plan, created_at) on teams to authenticated;
 grant execute on all functions in schema public to authenticated;
 grant execute on all functions in schema kc_private to authenticated;
 

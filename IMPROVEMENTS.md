@@ -53,7 +53,9 @@
 
 **Career angle:** Shows product-grade reliability thinking (offline queues, user-visible state) — a staple interview topic for full-stack roles.
 
-### 3. Write the architecture up as a portfolio case study / blog post  `impact 5/5 · effort S`
+### 3. Write the architecture up as a portfolio case study / blog post  `impact 5/5 · effort S`  ✅ **done 2026-07-06**
+
+> Shipped: `case-studies/keeping-cadence-no-server.html` on the mattdanusergrant site — "A multi-tenant SaaS with no server", built from BACKEND.md + NEON-REBUILD.md, with an inline architecture SVG, the invoker/definer pattern, and both cookie/identity gotchas as the narrative spine. Matches the site's design system (Fraunces/Inter, shared site.css, dark mode), passes the site's `html-validate` + link-check CI, and is NOT wired into nav or deployed. Linked from this repo's README. Rendered/verified light + dark in Chromium.
 
 **Why:** NEON-REBUILD.md's two gotchas (JWT identity is NULL inside SECURITY DEFINER; iOS WebKit refusing even same-site-subdomain cookies) are genuinely blog-worthy, rare, searchable knowledge — currently buried in a repo nobody visits.
 
@@ -89,7 +91,9 @@
 
 **Career angle:** Defense-in-depth at the database layer rounds out the security story the schema already tells.
 
-### 7. Ship billing with the one serverless function already scoped  `impact 3/5 · effort L`
+### 7. Ship billing with the one serverless function already scoped  `impact 3/5 · effort L`  🟡 **scaffolded 2026-07-06 (needs Stripe keys to go live)**
+
+> Shipped: the paywall in Postgres — `teams.plan` (free|pro) + `kc_private._guard_member_limit`, enforced at every member-add point (`_invite_to_team`/`_accept_invite`/`_join_by_token`); free caps at 3 members, `pro` lifts it; over-cap returns PT402 which the client already surfaces. `plan` is set only by the webhook (no user-callable RPC). Tested against real Postgres (`db/test.sql`). `api/billing.js` (Vercel) implements checkout (JWKS-verified team ownership → Stripe Checkout) + webhook (signature-verified → flips `teams.plan`); safe-by-default (501 until env is set), `vercel.json` routes `/api/*` ahead of the SPA catch-all, `package.json` adds the deps. **Remaining to go live:** set the Stripe/DB env vars, create a recurring price, register the webhook — can't be verified here without keys.
 
 **Why:** BACKEND.md's Deferred section already designed it: Stripe needs a webhook receiver, the only server this architecture would ever add — this is the entire gap between side project and product.
 
@@ -97,7 +101,9 @@
 
 **Career angle:** A live app with real paying users, however few, is a categorically stronger portfolio and negotiation asset than a live demo.
 
-### 8. Add LICENSE, screenshots, and an architecture diagram image to README  `impact 3/5 · effort S`
+### 8. Add LICENSE, screenshots, and an architecture diagram image to README  `impact 3/5 · effort S`  ✅ **done 2026-07-06**
+
+> Shipped: MIT `LICENSE`; `docs/` screenshots (All view, week light/dark) captured from the live app with seeded data via Chromium; a hand-authored `docs/architecture.svg` (Okabe–Ito palette, light card that reads on both GitHub themes); all embedded above the fold in the README with a License section.
 
 **Why:** The README is accurate but visually blank; the repo sells a visual product and a clever architecture with zero images, and has no license.
 
