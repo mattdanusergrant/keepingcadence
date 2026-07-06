@@ -61,7 +61,9 @@
 
 **Career angle:** Pure career leverage: converts the repo's strongest asset (the docs) into discoverable proof of senior-level debugging and architecture skills; likely to rank for Neon/PostgREST searches.
 
-### 4. Add optimistic concurrency to week saves  `impact 4/5 · effort M`
+### 4. Add optimistic concurrency to week saves  `impact 4/5 · effort M`  ✅ **done 2026-07-06**
+
+> Shipped: `save_plan`/`save_actuals` (and their kc_private workers) take a `p_known_updated_at` and return the new `updated_at`. If the stored row is newer than the token, they raise `stale write` (PT409) instead of clobbering. `updated_at` now uses `clock_timestamp()` so concurrent writes get strictly increasing stamps. Client: `cloudPull` records the token per (schedule, week), `flushSaves` sends it and stores the returned stamp; on a stale write it drops its token, clears the dirty flag (no loop), reloads the winning version, and toasts "changed on another device". Verified against real Postgres 16 (`db/test.sql`) and in Chromium (token sent, 409→reload+toast, no loop).
 
 **Why:** weeks.updated_at (db/schema.sql:101) is stored but unused; two devices or an owner+member editing concurrently silently clobber each other under last-write-wins.
 
@@ -77,7 +79,9 @@
 
 **How:** In cloudPush's debounce (app.html:2161), snapshot an immutable payload per schedule — {id, name, colorVar, week: state.weekStart, days: structuredClone(s.days), access} — and have flushSaves iterate the snapshot instead of state.schedules.
 
-### 6. Validate write payloads server-side in kc_private workers  `impact 3/5 · effort S`
+### 6. Validate write payloads server-side in kc_private workers  `impact 3/5 · effort S`  ✅ **done 2026-07-06**
+
+> Shipped: `kc_private._require_days` / `_require_actuals` run at the top of the save workers — require a 7-element JSON array, cap `pg_column_size` (16KB days / 4KB actuals), whitelist day-object keys (`blocks`/`actualHours`), require `blocks` to be a bounded array, and restrict actuals entries to string/number/null (PT422/PT413 to the caller). Added `left()` length caps on team names (80), schedule names (80), and color_var (32) in `_init_profile`/`_create_team`/`_rename_team`/`_create_schedule`/`_update_schedule`. All exercised by `db/test.sql` against real Postgres.
 
 **Why:** _save_plan/_save_actuals (db/schema.sql:303-346) accept arbitrary jsonb; a hostile or buggy client can store oversized or malformed days blobs that other members' clients then ingest.
 

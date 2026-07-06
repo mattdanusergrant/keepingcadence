@@ -979,6 +979,7 @@ const T = {
     synced: 'Synced',
     syncOffline: 'Offline — saved on this device',
     syncError: 'Sync failed',
+    syncReloaded: 'This week was changed on another device — reloaded',
     retry: 'Retry',
     shareCopied: 'Share link copied',
     duplicated: 'Duplicated to next week',
@@ -1079,6 +1080,7 @@ const T = {
     synced: 'Sincronizado',
     syncOffline: 'Sin conexión — guardado en este dispositivo',
     syncError: 'Error de sincronización',
+    syncReloaded: 'Esta semana cambió en otro dispositivo — recargada',
     retry: 'Reintentar',
     shareCopied: 'Enlace copiado',
     duplicated: 'Duplicado a próxima semana',
@@ -2201,6 +2203,17 @@ function setSyncStatus(st) { syncStatus = st; renderSavedIndicator(); }
 function isNetworkError(e) {
   return (e instanceof TypeError) || /NetworkError|Failed to fetch|network request failed/i.test(String(e && e.message));
 }
+// The server raises 'stale write' when the stored week is newer than the token
+// we sent (another device edited in between) — a conflict, not an outage.
+function isStaleWrite(e) { return /stale write/i.test(String(e && e.message)); }
+
+// Optimistic concurrency: the weeks.updated_at we last saw per (schedule, week).
+// We send it as save_plan/save_actuals' p_known_updated_at; the server rejects the
+// write if the row moved on, and returns the new stamp, which we store here so the
+// same device's next save isn't flagged against its own write.
+const weekUpdatedAt = {};
+function wkey(sid, week) { return sid + '@' + week; }
+function asTimestamp(v) { return typeof v === 'string' ? v : (v && (v.save_plan || v.save_actuals)) || undefined; }
 
 let cloudTimer = null;
 function cloudPush() {
@@ -2222,10 +2235,11 @@ async function flushSaves() {
   const week = state.weekStart;
   const snapshot = state.schedules.map(s => ({
     ref: s, id: s.id, name: s.name, colorVar: s.colorVar,
-    access: scheduleAccess(s), days: JSON.parse(JSON.stringify(s.days))
+    access: scheduleAccess(s), days: JSON.parse(JSON.stringify(s.days)),
+    known: weekUpdatedAt[wkey(s.id, week)]
   }));
   setSyncStatus('saving');
-  let failed = false, offline = false;
+  let failed = false, offline = false, staleHit = false;
   for (const it of snapshot) {
     const origId = it.id;
     try {
@@ -2234,7 +2248,8 @@ async function flushSaves() {
       if (it.access === 'actuals') {
         if (isServerId(origId)) {
           const actuals = it.days.map(d => (d.actualHours === 0 || d.actualHours) ? String(d.actualHours) : '');
-          await rpc('save_actuals', { p_schedule_id: origId, p_week_start: week, p_actuals: actuals });
+          const up = await rpc('save_actuals', { p_schedule_id: origId, p_week_start: week, p_actuals: actuals, p_known_updated_at: it.known });
+          weekUpdatedAt[wkey(origId, week)] = asTimestamp(up);
         }
         markSynced(origId);
         continue;
@@ -2254,18 +2269,28 @@ async function flushSaves() {
         await rpc('update_schedule', { p_schedule_id: id, p_name: it.name, p_color: it.colorVar });
       }
       // Owner writes the plan; save_plan carries over a member's actualHours.
-      await rpc('save_plan', { p_schedule_id: id, p_week_start: week, p_days: it.days });
+      const up = await rpc('save_plan', { p_schedule_id: id, p_week_start: week, p_days: it.days, p_known_updated_at: it.known });
+      weekUpdatedAt[wkey(id, week)] = asTimestamp(up);
       markSynced(origId);
       if (id !== origId) markSynced(id);
     } catch (e) {
-      failed = true;
-      if (isNetworkError(e)) offline = true;
-      dirtyIds.add(it.ref.id);
+      if (isStaleWrite(e)) {
+        // Someone else won this week. Drop our stale token and clear the dirty
+        // flag (so we don't loop), then reload the winning version below.
+        staleHit = true;
+        markSynced(it.ref.id);
+        delete weekUpdatedAt[wkey(it.ref.id, week)];
+      } else {
+        failed = true;
+        if (isNetworkError(e)) offline = true;
+        dirtyIds.add(it.ref.id);
+      }
     }
   }
   saveDirtyIds();
+  if (staleHit) { try { showToast(t('syncReloaded')); } catch (e) {} await cloudPull(); }
   setSyncStatus(failed ? (offline ? 'offline' : 'error') : 'synced');
-  return !failed;
+  return !failed && !staleHit;
 }
 function markSynced(id) { if (id != null) dirtyIds.delete(id); }
 
@@ -2298,9 +2323,14 @@ async function cloudPull() {
   const byId = {};
   if (list.length) {
     const inList = '(' + list.map(s => s.id).join(',') + ')';
-    const weeks = await dapi('/weeks?select=schedule_id,days&week_start=eq.' +
+    const weeks = await dapi('/weeks?select=schedule_id,days,updated_at&week_start=eq.' +
       encodeURIComponent(state.weekStart) + '&schedule_id=in.' + inList);
-    (weeks || []).forEach(w => { byId[w.schedule_id] = w.days; });
+    (weeks || []).forEach(w => {
+      byId[w.schedule_id] = w.days;
+      // Record the optimistic-concurrency token unless this schedule has an
+      // unsynced local edit (whose token would be stale against our own change).
+      if (!dirtyIds.has(w.schedule_id)) weekUpdatedAt[wkey(w.schedule_id, state.weekStart)] = w.updated_at;
+    });
   }
   const localById = {};
   (state.schedules || []).forEach(s => { localById[s.id] = s; });

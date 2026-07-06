@@ -34,3 +34,14 @@ node test/smoke.js
 ```
 
 CI runs it on every push and pull request (`.github/workflows/test.yml`).
+
+The database write-path guards (payload validation, optimistic-concurrency
+`stale write` detection, name/length caps) have their own SQL test suite. Against
+any Postgres with `schema.sql` applied:
+
+```bash
+createdb kctest
+psql -d kctest -c 'create role authenticated'
+psql -d kctest -f db/schema.sql
+psql -d kctest -f db/test.sql   # prints "ALL SQL TESTS PASSED"
+```

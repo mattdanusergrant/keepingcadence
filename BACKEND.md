@@ -148,8 +148,8 @@ Client-facing signatures (the public wrappers; identity comes from the session, 
 | `create_schedule(p_team_id, p_name, p_color?, p_assigned_user_id?)` | owner | New schedule in that team. |
 | `update_schedule(p_schedule_id, p_name?, p_color?, p_assigned_user_id?, p_clear_assignee?)` | owner | Rename / recolor / (re)assign. |
 | `delete_schedule(p_schedule_id)` | owner | Delete (its weeks cascade). |
-| `save_plan(p_schedule_id, p_week_start, p_days)` | owner | Write the week's plan; preserves a member's `actualHours`. |
-| `save_actuals(p_schedule_id, p_week_start, p_actuals)` | assigned member | Write only the week's actual hours; preserves the plan. |
+| `save_plan(p_schedule_id, p_week_start, p_days, p_known_updated_at?)` | owner | Write the week's plan; preserves a member's `actualHours`. Validates `p_days` shape (7-day array, ≤16KB, whitelisted keys). Returns the new `updated_at`; if `p_known_updated_at` is older than the stored row it raises `stale write` (PT409) instead of clobbering. |
+| `save_actuals(p_schedule_id, p_week_start, p_actuals, p_known_updated_at?)` | assigned member | Write only the week's actual hours; preserves the plan. Validates `p_actuals` shape. Same optimistic-concurrency contract as `save_plan`. |
 | `remove_member(p_team_id, p_user_id)` / `leave_team(p_team_id)` | owner / member | Remove a member / leave a team. |
 
 ## Verified live (2026-06-22)
