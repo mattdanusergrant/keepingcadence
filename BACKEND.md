@@ -148,8 +148,8 @@ Client-facing signatures (the public wrappers; identity comes from the session, 
 | `create_schedule(p_team_id, p_name, p_color?, p_assigned_user_id?)` | owner | New schedule in that team. |
 | `update_schedule(p_schedule_id, p_name?, p_color?, p_assigned_user_id?, p_clear_assignee?)` | owner | Rename / recolor / (re)assign. |
 | `delete_schedule(p_schedule_id)` | owner | Delete (its weeks cascade). |
-| `save_plan(p_schedule_id, p_week_start, p_days)` | owner | Write the week's plan; preserves a member's `actualHours`. |
-| `save_actuals(p_schedule_id, p_week_start, p_actuals)` | assigned member | Write only the week's actual hours; preserves the plan. |
+| `save_plan(p_schedule_id, p_week_start, p_days, p_known_updated_at?)` | owner | Write the week's plan; preserves a member's `actualHours`. Validates `p_days` shape (7-day array, ≤16KB, whitelisted keys). Returns the new `updated_at`; if `p_known_updated_at` is older than the stored row it raises `stale write` (PT409) instead of clobbering. |
+| `save_actuals(p_schedule_id, p_week_start, p_actuals, p_known_updated_at?)` | assigned member | Write only the week's actual hours; preserves the plan. Validates `p_actuals` shape. Same optimistic-concurrency contract as `save_plan`. |
 | `remove_member(p_team_id, p_user_id)` / `leave_team(p_team_id)` | owner / member | Remove a member / leave a team. |
 
 ## Verified live (2026-06-22)
@@ -159,7 +159,23 @@ can't see another's teams/schedules); the `kc_private` workers are unreachable v
 the Data API (no impersonation). Login persists across refresh on Firefox, Safari,
 and iOS (same-origin cookie + cookie-based `restoreSession`).
 
-## Deferred
-**Billing (Stripe).** Neon can't receive webhooks, so subscriptions would need
-one small serverless function (the only server this design would ever add).
-Deferred until the product is monetized.
+## Billing (Stripe) — scaffolded
+
+The paywall itself lives in Postgres like every other rule: `teams.plan`
+(`free` | `pro`) plus `kc_private._guard_member_limit`, enforced at every point a
+member is added (`_invite_to_team`, `_accept_invite`, `_join_by_token`). Free
+teams cap at **3 members**; `pro` lifts it. `plan` is set **only** by the billing
+webhook (a privileged connection) — there is deliberately no user-callable RPC to
+change it. Over-cap actions return `PT402` (HTTP 402), which the client already
+surfaces as an upgrade message.
+
+`api/billing.js` is the one serverless function this design adds (Stripe is the
+only thing that can't be a client-held JWT). Two actions on one Vercel function:
+`?action=checkout` (verifies the caller owns the team via the Neon JWKS, opens a
+Stripe Checkout subscription) and `?action=webhook` (verifies the Stripe
+signature, flips `teams.plan`). **Safe by default:** with any required env var
+missing it returns `501` and does nothing, so it's inert until configured. To go
+live: `npm i`, set `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` /
+`STRIPE_PRICE_ID` / `DATABASE_URL` / `NEON_JWKS_URL` / `APP_URL` in Vercel, create
+a recurring Stripe price, and register the webhook endpoint. `vercel.json` already
+routes `/api/*` to the function (ahead of the SPA catch-all).

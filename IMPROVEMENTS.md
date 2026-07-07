@@ -33,7 +33,9 @@
 
 ## Ranked improvements
 
-### 1. Port the ronin-survivor smoke test + GitHub Actions CI to this repo  `impact 5/5 · effort M`
+### 1. Port the ronin-survivor smoke test + GitHub Actions CI to this repo  `impact 5/5 · effort M`  ✅ **done 2026-07-06**
+
+> Shipped: `test/smoke.js` (22 assertions over the pure core — hhmm↔minutes round-trip, legacyRangeToBlocks, normalizeDay, migrateState across all three legacy shapes, encode/decode hash round-trip, escapeHtml, daySegments, toggleBlock, fmtHoursNumber) loaded in a Node `vm` behind a DOM/localStorage stub, plus `.github/workflows/test.yml` running it on push/PR. Deferred: the live SQL merge-assertion against a scratch Neon branch (needs DB credentials, not offline-runnable in CI here) and the flushSaves branching test (couples to too much module state to isolate cleanly — better paired with improvement #2's refactor).
 
 **Why:** A live app with cloud-sync merge logic and zero automated checks is the repo's single biggest gap; he already built the exact pattern needed (dependency-free Node smoke test driving an inline <script> behind a DOM stub) in ronin-survivor's test/smoke.js and .github/workflows/test.yml.
 
@@ -41,7 +43,9 @@
 
 **Career angle:** Directly answers the one question a hiring manager will ask of this repo ('where are the tests?') and demonstrates transferable CI discipline across projects.
 
-### 2. Surface sync status and stop swallowing save failures  `impact 5/5 · effort M`
+### 2. Surface sync status and stop swallowing save failures  `impact 5/5 · effort M`  ✅ **done 2026-07-06**
+
+> Shipped: `flushSaves` now returns a result and no longer swallows errors. A persisted dirty-set (`keepingcadence-dirty`) tracks unsynced schedule ids; the saved indicator reflects real cloud state — Saving… / Synced / "Offline — saved on this device" / "Sync failed" — with a Retry button (`#retrySyncBtn`) for the offline/error states. `cloudPull` no longer clobbers schedules still in the dirty-set, so an offline edit survives the next pull. EN/ES strings added. Verified in Chromium against a mocked Neon backend: edit→Synced, offline edit→Offline+retry+dirty, retry→Synced+clean.
 
 **Why:** flushSaves() (app.html:2166) silently discards errors, so users can lose 'saved' work; trust is the whole product for a scheduling app.
 
@@ -49,7 +53,9 @@
 
 **Career angle:** Shows product-grade reliability thinking (offline queues, user-visible state) — a staple interview topic for full-stack roles.
 
-### 3. Write the architecture up as a portfolio case study / blog post  `impact 5/5 · effort S`
+### 3. Write the architecture up as a portfolio case study / blog post  `impact 5/5 · effort S`  ✅ **done 2026-07-06**
+
+> Shipped: `case-studies/keeping-cadence-no-server.html` on the mattdanusergrant site — "A multi-tenant SaaS with no server", built from BACKEND.md + NEON-REBUILD.md, with an inline architecture SVG, the invoker/definer pattern, and both cookie/identity gotchas as the narrative spine. Matches the site's design system (Fraunces/Inter, shared site.css, dark mode), passes the site's `html-validate` + link-check CI, and is NOT wired into nav or deployed. Linked from this repo's README. Rendered/verified light + dark in Chromium.
 
 **Why:** NEON-REBUILD.md's two gotchas (JWT identity is NULL inside SECURITY DEFINER; iOS WebKit refusing even same-site-subdomain cookies) are genuinely blog-worthy, rare, searchable knowledge — currently buried in a repo nobody visits.
 
@@ -57,7 +63,9 @@
 
 **Career angle:** Pure career leverage: converts the repo's strongest asset (the docs) into discoverable proof of senior-level debugging and architecture skills; likely to rank for Neon/PostgREST searches.
 
-### 4. Add optimistic concurrency to week saves  `impact 4/5 · effort M`
+### 4. Add optimistic concurrency to week saves  `impact 4/5 · effort M`  ✅ **done 2026-07-06**
+
+> Shipped: `save_plan`/`save_actuals` (and their kc_private workers) take a `p_known_updated_at` and return the new `updated_at`. If the stored row is newer than the token, they raise `stale write` (PT409) instead of clobbering. `updated_at` now uses `clock_timestamp()` so concurrent writes get strictly increasing stamps. Client: `cloudPull` records the token per (schedule, week), `flushSaves` sends it and stores the returned stamp; on a stale write it drops its token, clears the dirty flag (no loop), reloads the winning version, and toasts "changed on another device". Verified against real Postgres 16 (`db/test.sql`) and in Chromium (token sent, 409→reload+toast, no loop).
 
 **Why:** weeks.updated_at (db/schema.sql:101) is stored but unused; two devices or an owner+member editing concurrently silently clobber each other under last-write-wins.
 
@@ -65,13 +73,17 @@
 
 **Career angle:** Concurrency control in a distributed-ish system is a classic senior-engineer signal, implemented here in ~40 lines of SQL+JS.
 
-### 5. Fix the flushSaves week-capture race  `impact 4/5 · effort S`
+### 5. Fix the flushSaves week-capture race  `impact 4/5 · effort S`  ✅ **done 2026-07-06**
+
+> Shipped: `flushSaves` now takes a synchronous snapshot before its first `await` — the week plus a deep copy of each schedule's days — and iterates the snapshot, so navigating to another week mid-flush can no longer persist the new week's hours under the old `week_start`. Verified in Chromium: started a (delayed) flush on one week, switched weeks while it was in flight, and the save still landed on the original week.
 
 **Why:** flushSaves reads state.weekStart once but awaits network calls against live schedule objects (app.html:2168-2196); switching weeks mid-flush can write the new week's days under the old week key.
 
 **How:** In cloudPush's debounce (app.html:2161), snapshot an immutable payload per schedule — {id, name, colorVar, week: state.weekStart, days: structuredClone(s.days), access} — and have flushSaves iterate the snapshot instead of state.schedules.
 
-### 6. Validate write payloads server-side in kc_private workers  `impact 3/5 · effort S`
+### 6. Validate write payloads server-side in kc_private workers  `impact 3/5 · effort S`  ✅ **done 2026-07-06**
+
+> Shipped: `kc_private._require_days` / `_require_actuals` run at the top of the save workers — require a 7-element JSON array, cap `pg_column_size` (16KB days / 4KB actuals), whitelist day-object keys (`blocks`/`actualHours`), require `blocks` to be a bounded array, and restrict actuals entries to string/number/null (PT422/PT413 to the caller). Added `left()` length caps on team names (80), schedule names (80), and color_var (32) in `_init_profile`/`_create_team`/`_rename_team`/`_create_schedule`/`_update_schedule`. All exercised by `db/test.sql` against real Postgres.
 
 **Why:** _save_plan/_save_actuals (db/schema.sql:303-346) accept arbitrary jsonb; a hostile or buggy client can store oversized or malformed days blobs that other members' clients then ingest.
 
@@ -79,7 +91,9 @@
 
 **Career angle:** Defense-in-depth at the database layer rounds out the security story the schema already tells.
 
-### 7. Ship billing with the one serverless function already scoped  `impact 3/5 · effort L`
+### 7. Ship billing with the one serverless function already scoped  `impact 3/5 · effort L`  🟡 **scaffolded 2026-07-06 (needs Stripe keys to go live)**
+
+> Shipped: the paywall in Postgres — `teams.plan` (free|pro) + `kc_private._guard_member_limit`, enforced at every member-add point (`_invite_to_team`/`_accept_invite`/`_join_by_token`); free caps at 3 members, `pro` lifts it; over-cap returns PT402 which the client already surfaces. `plan` is set only by the webhook (no user-callable RPC). Tested against real Postgres (`db/test.sql`). `api/billing.js` (Vercel) implements checkout (JWKS-verified team ownership → Stripe Checkout) + webhook (signature-verified → flips `teams.plan`); safe-by-default (501 until env is set), `vercel.json` routes `/api/*` ahead of the SPA catch-all, `package.json` adds the deps. **Remaining to go live:** set the Stripe/DB env vars, create a recurring price, register the webhook — can't be verified here without keys.
 
 **Why:** BACKEND.md's Deferred section already designed it: Stripe needs a webhook receiver, the only server this architecture would ever add — this is the entire gap between side project and product.
 
@@ -87,7 +101,9 @@
 
 **Career angle:** A live app with real paying users, however few, is a categorically stronger portfolio and negotiation asset than a live demo.
 
-### 8. Add LICENSE, screenshots, and an architecture diagram image to README  `impact 3/5 · effort S`
+### 8. Add LICENSE, screenshots, and an architecture diagram image to README  `impact 3/5 · effort S`  ✅ **done 2026-07-06**
+
+> Shipped: MIT `LICENSE`; `docs/` screenshots (All view, week light/dark) captured from the live app with seeded data via Chromium; a hand-authored `docs/architecture.svg` (Okabe–Ito palette, light card that reads on both GitHub themes); all embedded above the fold in the README with a License section.
 
 **Why:** The README is accurate but visually blank; the repo sells a visual product and a clever architecture with zero images, and has no license.
 

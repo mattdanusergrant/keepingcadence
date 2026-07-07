@@ -1,0 +1,14 @@
+{
+  "name": "keepingcadence",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Keeping Cadence — static app on Vercel. The only server code is api/billing.js (Stripe webhook); everything else is Neon (Postgres RLS + RPC).",
+  "scripts": {
+    "test": "node test/smoke.js"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^0.10.0",
+    "jose": "^5.9.0",
+    "stripe": "^17.0.0"
+  }
+}

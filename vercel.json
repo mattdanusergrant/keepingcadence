@@ -1,5 +1,6 @@
 {
   "rewrites": [
+    { "source": "/api/:path*", "destination": "/api/:path*" },
     { "source": "/__neonauth/:path*", "destination": "https://auth.keepingcadence.com/neondb/auth/:path*" },
     { "source": "/(.*)", "has": [{ "type": "host", "value": "keepingcadence.com" }], "destination": "/landing.html" },
     { "source": "/(.*)", "has": [{ "type": "host", "value": "www.keepingcadence.com" }], "destination": "/landing.html" },

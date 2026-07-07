@@ -116,6 +116,7 @@
     display: inline-block;
   }
   .toolbar button:hover { border-color: var(--accent); }
+  .toolbar button[hidden] { display: none; }
   .toolbar .week-picker {
     display: inline-flex; align-items: center; gap: 0.4rem;
     color: var(--muted); font-size: 0.9rem;
@@ -129,6 +130,8 @@
     font-variant-numeric: tabular-nums;
   }
   .saved-indicator.unsaved { color: var(--accent); }
+  .saved-indicator.sync-error { color: var(--warning); }
+  .retry-sync { font-size: 0.8rem; padding: 0.15rem 0.55rem; }
 
   textarea, input[type=text], input[type=time], input[type=number], select.time-select {
     font: inherit; padding: 0.5rem;
@@ -709,6 +712,7 @@
       <input type="date" id="weekStart">
     </div>
     <span class="saved-indicator" id="savedIndicator"></span>
+    <button id="retrySyncBtn" class="retry-sync" hidden data-i18n="retry">Retry</button>
   </div>
 
   <div class="schedule-tabs" id="scheduleTabs"></div>
@@ -972,6 +976,11 @@ const T = {
     close: 'Close',
     saving: 'Saving…',
     saved: 'Saved',
+    synced: 'Synced',
+    syncOffline: 'Offline — saved on this device',
+    syncError: 'Sync failed',
+    syncReloaded: 'This week was changed on another device — reloaded',
+    retry: 'Retry',
     shareCopied: 'Share link copied',
     duplicated: 'Duplicated to next week',
     copyToNext: 'Copy to next day →',
@@ -1068,6 +1077,11 @@ const T = {
     close: 'Cerrar',
     saving: 'Guardando…',
     saved: 'Guardado',
+    synced: 'Sincronizado',
+    syncOffline: 'Sin conexión — guardado en este dispositivo',
+    syncError: 'Error de sincronización',
+    syncReloaded: 'Esta semana cambió en otro dispositivo — recargada',
+    retry: 'Reintentar',
     shareCopied: 'Enlace copiado',
     duplicated: 'Duplicado a próxima semana',
     copyToNext: 'Copiar al día siguiente →',
@@ -1736,12 +1750,26 @@ function render() {
 
 function renderSavedIndicator(override) {
   const el = document.getElementById('savedIndicator');
+  if (!el) return;
+  const retry = document.getElementById('retrySyncBtn');
+  if (retry) retry.hidden = true;
+  el.classList.remove('unsaved', 'sync-error');
   if (override) {
     el.textContent = override;
     el.classList.add('unsaved');
     return;
   }
-  el.classList.remove('unsaved');
+  // Signed in, the cloud sync status is the meaningful state of the data — a
+  // "saved" local draft that never reached the server would be a silent lie.
+  if (CLOUD.enabled && authUser) {
+    switch (syncStatus) {
+      case 'saving':  el.textContent = t('saving'); el.classList.add('unsaved'); return;
+      case 'synced':  el.textContent = t('synced'); return;
+      case 'offline': el.textContent = t('syncOffline'); el.classList.add('unsaved'); if (retry) retry.hidden = false; return;
+      case 'error':   el.textContent = t('syncError'); el.classList.add('sync-error'); if (retry) retry.hidden = false; return;
+      default: break; // no cloud activity yet → fall through to the local timestamp
+    }
+  }
   el.textContent = fmtSavedAt(lastSavedAt);
 }
 
@@ -2157,44 +2185,114 @@ function scheduleHasContent(s) {
     dayBlocks(d).length || (d.actualHours !== '' && d.actualHours != null));
 }
 
+// Cloud sync status surfaced in the saved indicator, plus a dirty-set of
+// schedule ids whose latest local edit hasn't been confirmed on the server.
+// Persisting the dirty-set means an unsynced edit survives a reload, and it
+// guards those schedules from being clobbered by a cloudPull (see below).
+let syncStatus = '';            // '' | 'saving' | 'synced' | 'offline' | 'error'
+const DIRTY_KEY = 'keepingcadence-dirty';
+let dirtyIds = loadDirtyIds();
+function loadDirtyIds() {
+  try { const r = JSON.parse(localStorage.getItem(DIRTY_KEY) || '[]'); return new Set(Array.isArray(r) ? r : []); }
+  catch (e) { return new Set(); }
+}
+function saveDirtyIds() { try { localStorage.setItem(DIRTY_KEY, JSON.stringify([...dirtyIds])); } catch (e) {} }
+function setSyncStatus(st) { syncStatus = st; renderSavedIndicator(); }
+// A failed fetch (no network) throws TypeError; a server-side failure surfaces
+// as an Error we constructed from a non-2xx response. Only the former is "offline".
+function isNetworkError(e) {
+  return (e instanceof TypeError) || /NetworkError|Failed to fetch|network request failed/i.test(String(e && e.message));
+}
+// The server raises 'stale write' when the stored week is newer than the token
+// we sent (another device edited in between) — a conflict, not an outage.
+function isStaleWrite(e) { return /stale write/i.test(String(e && e.message)); }
+
+// Optimistic concurrency: the weeks.updated_at we last saw per (schedule, week).
+// We send it as save_plan/save_actuals' p_known_updated_at; the server rejects the
+// write if the row moved on, and returns the new stamp, which we store here so the
+// same device's next save isn't flagged against its own write.
+const weekUpdatedAt = {};
+function wkey(sid, week) { return sid + '@' + week; }
+function asTimestamp(v) { return typeof v === 'string' ? v : (v && (v.save_plan || v.save_actuals)) || undefined; }
+
 let cloudTimer = null;
 function cloudPush() {
   if (!CLOUD.enabled || !authUser) return;
+  const a = activeSchedule();
+  if (a) { dirtyIds.add(a.id); saveDirtyIds(); }
+  setSyncStatus('saving');
   if (cloudTimer) clearTimeout(cloudTimer);
   cloudTimer = setTimeout(() => { cloudTimer = null; flushSaves(); }, 1200);
 }
+// Returns true if every schedule reached the server. Never throws: failures are
+// captured, the affected ids stay in the dirty-set, and the status reflects it —
+// a "saved" indicator must never quietly mean "saved only on this device".
 async function flushSaves() {
-  if (!CLOUD.enabled || !authUser) return;
+  if (!CLOUD.enabled || !authUser) return true;
+  // Snapshot synchronously, before any await: capture the current week and an
+  // immutable copy of each schedule's days. Otherwise navigating to another week
+  // mid-flush persists the new week's hours under the old week_start (a real race).
   const week = state.weekStart;
-  for (const s of state.schedules.slice()) {
+  const snapshot = state.schedules.map(s => ({
+    ref: s, id: s.id, name: s.name, colorVar: s.colorVar,
+    access: scheduleAccess(s), days: JSON.parse(JSON.stringify(s.days)),
+    known: weekUpdatedAt[wkey(s.id, week)]
+  }));
+  setSyncStatus('saving');
+  let failed = false, offline = false, staleHit = false;
+  for (const it of snapshot) {
+    const origId = it.id;
     try {
       // Assigned member: write only this week's actual hours (the plan is the
       // owner's and is preserved server-side).
-      if (scheduleAccess(s) === 'actuals') {
-        if (!isServerId(s.id)) continue;
-        const actuals = s.days.map(d => (d.actualHours === 0 || d.actualHours) ? String(d.actualHours) : '');
-        await rpc('save_actuals', { p_schedule_id: s.id, p_week_start: week, p_actuals: actuals });
+      if (it.access === 'actuals') {
+        if (isServerId(origId)) {
+          const actuals = it.days.map(d => (d.actualHours === 0 || d.actualHours) ? String(d.actualHours) : '');
+          const up = await rpc('save_actuals', { p_schedule_id: origId, p_week_start: week, p_actuals: actuals, p_known_updated_at: it.known });
+          weekUpdatedAt[wkey(origId, week)] = asTimestamp(up);
+        }
+        markSynced(origId);
         continue;
       }
-      let id = s.id;
+      let id = origId;
       if (!isServerId(id)) {
         // local-only schedule: create it in the active team, then adopt the real id
-        if (!iOwnActiveTeam() || !activeTeamId) continue;
-        const created = await rpc('create_schedule', { p_team_id: activeTeamId, p_name: s.name, p_color: s.colorVar });
+        if (!iOwnActiveTeam() || !activeTeamId) { markSynced(origId); continue; }
+        const created = await rpc('create_schedule', { p_team_id: activeTeamId, p_name: it.name, p_color: it.colorVar });
         const row = unrow(created);
         if (row && row.id) {
-          if (state.activeId === s.id) state.activeId = row.id;
-          s.id = row.id; id = row.id;
+          if (state.activeId === it.ref.id) state.activeId = row.id;
+          it.ref.id = row.id; id = row.id;
           try { localStorage.setItem(DRAFT_KEY, JSON.stringify(state)); } catch (e) {}
         }
       } else {
-        await rpc('update_schedule', { p_schedule_id: id, p_name: s.name, p_color: s.colorVar });
+        await rpc('update_schedule', { p_schedule_id: id, p_name: it.name, p_color: it.colorVar });
       }
       // Owner writes the plan; save_plan carries over a member's actualHours.
-      await rpc('save_plan', { p_schedule_id: id, p_week_start: week, p_days: s.days });
-    } catch (e) { /* offline/error: the local draft remains the source of truth */ }
+      const up = await rpc('save_plan', { p_schedule_id: id, p_week_start: week, p_days: it.days, p_known_updated_at: it.known });
+      weekUpdatedAt[wkey(id, week)] = asTimestamp(up);
+      markSynced(origId);
+      if (id !== origId) markSynced(id);
+    } catch (e) {
+      if (isStaleWrite(e)) {
+        // Someone else won this week. Drop our stale token and clear the dirty
+        // flag (so we don't loop), then reload the winning version below.
+        staleHit = true;
+        markSynced(it.ref.id);
+        delete weekUpdatedAt[wkey(it.ref.id, week)];
+      } else {
+        failed = true;
+        if (isNetworkError(e)) offline = true;
+        dirtyIds.add(it.ref.id);
+      }
+    }
   }
+  saveDirtyIds();
+  if (staleHit) { try { showToast(t('syncReloaded')); } catch (e) {} await cloudPull(); }
+  setSyncStatus(failed ? (offline ? 'offline' : 'error') : 'synced');
+  return !failed && !staleHit;
 }
+function markSynced(id) { if (id != null) dirtyIds.delete(id); }
 
 // Load the teams I can see (own + joined); guarantee I own at least one (a
 // personal workspace) and that activeTeamId points at a real team.
@@ -2225,16 +2323,31 @@ async function cloudPull() {
   const byId = {};
   if (list.length) {
     const inList = '(' + list.map(s => s.id).join(',') + ')';
-    const weeks = await dapi('/weeks?select=schedule_id,days&week_start=eq.' +
+    const weeks = await dapi('/weeks?select=schedule_id,days,updated_at&week_start=eq.' +
       encodeURIComponent(state.weekStart) + '&schedule_id=in.' + inList);
-    (weeks || []).forEach(w => { byId[w.schedule_id] = w.days; });
+    (weeks || []).forEach(w => {
+      byId[w.schedule_id] = w.days;
+      // Record the optimistic-concurrency token unless this schedule has an
+      // unsynced local edit (whose token would be stale against our own change).
+      if (!dirtyIds.has(w.schedule_id)) weekUpdatedAt[wkey(w.schedule_id, state.weekStart)] = w.updated_at;
+    });
   }
-  let schedules = list.map(s => ({
-    id: s.id, name: s.name, colorVar: s.color_var || 'accent',
-    assignedUserId: s.assigned_user_id,
-    days: Array.isArray(byId[s.id]) && byId[s.id].length === 7
-      ? byId[s.id].map(normalizeDay) : Array.from({ length: 7 }, () => emptyDay())
-  }));
+  const localById = {};
+  (state.schedules || []).forEach(s => { localById[s.id] = s; });
+  let schedules = list.map(s => {
+    const serverDays = Array.isArray(byId[s.id]) && byId[s.id].length === 7
+      ? byId[s.id].map(normalizeDay) : Array.from({ length: 7 }, () => emptyDay());
+    // Never clobber unsynced local edits: a schedule still in the dirty-set has
+    // changes that haven't reached the server, so keep the local days and let the
+    // next flush win. (Without this, an offline edit is lost on the next pull.)
+    const local = localById[s.id];
+    const days = (dirtyIds.has(s.id) && local && Array.isArray(local.days) && local.days.length === 7)
+      ? local.days.map(normalizeDay) : serverDays;
+    return {
+      id: s.id, name: s.name, colorVar: s.color_var || 'accent',
+      assignedUserId: s.assigned_user_id, days
+    };
+  });
   // An owned team with nothing yet gets a starter schedule so there's something
   // to edit; a joined team with nothing assigned to me stays empty.
   if (!schedules.length && iOwnActiveTeam()) {
@@ -2242,6 +2355,9 @@ async function cloudPull() {
   }
   const migrated = migrateState({ weekStart: state.weekStart, schedules, activeId: state.activeId });
   state = migrated || { weekStart: state.weekStart, schedules: [], activeId: null };
+  // A clean pull (nothing left unsynced) means the on-screen data matches the
+  // server; reflect that instead of a stale "saved locally" timestamp.
+  if (!dirtyIds.size && syncStatus !== 'saving') setSyncStatus('synced');
   render();
   return list.length;
 }
@@ -2333,6 +2449,8 @@ async function cloudRefresh() {
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') cloudRefresh(); });
 window.addEventListener('focus', cloudRefresh);
+const retrySyncBtn = document.getElementById('retrySyncBtn');
+if (retrySyncBtn) retrySyncBtn.addEventListener('click', () => { flushSaves(); });
 
 // ---- Teams ----------------------------------------------------------------
 // Pull the active team's roster (if I own it) and any pending invites to me.
@@ -2591,7 +2709,8 @@ function setupCloudUI() {
     try { await authFetch('/sign-out', { method: 'POST', body: '{}' }); } catch (e) {}
     setSessionToken(null); authUser = null; dataJwt = null; dataJwtExp = 0;
     teams = []; activeTeamId = null; teamMembers = []; pendingInvites = [];
-    reflectAuth(); modal.hidden = true;
+    dirtyIds.clear(); saveDirtyIds(); syncStatus = '';
+    reflectAuth(); renderSavedIndicator(); modal.hidden = true;
   });
   const appLinkBtn = document.getElementById('copyAppLinkBtn');
   if (appLinkBtn) appLinkBtn.addEventListener('click', () => copyInvite(appInviteUrl()));

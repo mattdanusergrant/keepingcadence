@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 470" font-family="'Inter',system-ui,-apple-system,Segoe UI,Roboto,sans-serif" role="img" aria-label="Keeping Cadence architecture: a static browser app talks directly to Neon — auth via a same-origin Cloudflare Worker proxy, reads via the Data API under RLS, writes via public SECURITY INVOKER wrappers that delegate to private SECURITY DEFINER workers.">
+  <defs>
+    <marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#6A6A6A"/>
+    </marker>
+  </defs>
+
+  <rect x="1" y="1" width="958" height="468" rx="16" fill="#FBF8F2" stroke="#CBC4B2"/>
+  <text x="32" y="40" font-size="20" font-weight="700" fill="#15161C">Keeping Cadence — no server, just Neon</text>
+  <text x="32" y="62" font-size="13" fill="#6A6A6A">A static single-file app talks directly to Neon. The only edge piece is a 57-line stateless Cloudflare Worker.</text>
+
+  <!-- Browser column -->
+  <rect x="32" y="92" width="196" height="340" rx="12" fill="#FFFFFF" stroke="#CBC4B2"/>
+  <text x="130" y="122" font-size="15" font-weight="700" fill="#15161C" text-anchor="middle">Browser</text>
+  <text x="130" y="142" font-size="12" fill="#6A6A6A" text-anchor="middle">app.html · static · Vercel</text>
+  <line x1="52" y1="158" x2="208" y2="158" stroke="#E5E0D2"/>
+  <text x="130" y="182" font-size="11.5" fill="#2A2A2A" text-anchor="middle">Offline-first</text>
+  <text x="130" y="200" font-size="11.5" fill="#6A6A6A" text-anchor="middle">localStorage draft</text>
+  <text x="130" y="218" font-size="11.5" fill="#6A6A6A" text-anchor="middle">#s= share links</text>
+  <text x="130" y="252" font-size="11.5" fill="#2A2A2A" text-anchor="middle">Signed in adds</text>
+  <text x="130" y="270" font-size="11.5" fill="#6A6A6A" text-anchor="middle">accounts · sync</text>
+  <text x="130" y="288" font-size="11.5" fill="#6A6A6A" text-anchor="middle">teams · invites</text>
+
+  <!-- Neon column -->
+  <rect x="732" y="92" width="196" height="340" rx="12" fill="#FFFFFF" stroke="#CBC4B2"/>
+  <text x="830" y="122" font-size="15" font-weight="700" fill="#15161C" text-anchor="middle">Neon</text>
+  <text x="830" y="142" font-size="12" fill="#6A6A6A" text-anchor="middle">Postgres + Neon Auth</text>
+  <line x1="752" y1="158" x2="908" y2="158" stroke="#E5E0D2"/>
+  <text x="830" y="182" font-size="11.5" fill="#2A2A2A" text-anchor="middle">Row-level security</text>
+  <text x="830" y="200" font-size="11.5" fill="#6A6A6A" text-anchor="middle">every table</text>
+  <text x="830" y="234" font-size="11.5" fill="#2A2A2A" text-anchor="middle">kc_private schema</text>
+  <text x="830" y="252" font-size="11.5" fill="#6A6A6A" text-anchor="middle">not exposed by</text>
+  <text x="830" y="270" font-size="11.5" fill="#6A6A6A" text-anchor="middle">the Data API</text>
+  <text x="830" y="304" font-size="11.5" fill="#2A2A2A" text-anchor="middle">Better Auth</text>
+  <text x="830" y="322" font-size="11.5" fill="#6A6A6A" text-anchor="middle">cookie session</text>
+
+  <!-- Lane 1: Auth (green) -->
+  <rect x="300" y="176" width="176" height="44" rx="9" fill="#FFFFFF" stroke="#009E73" stroke-width="2"/>
+  <text x="388" y="194" font-size="12.5" font-weight="600" fill="#15161C" text-anchor="middle">Cloudflare Worker</text>
+  <text x="388" y="210" font-size="11" fill="#6A6A6A" text-anchor="middle">same-origin auth proxy</text>
+  <text x="512" y="166" font-size="11.5" font-weight="600" fill="#009E73">Auth — HttpOnly cookie → short-lived Data API JWT</text>
+  <line x1="228" y1="198" x2="298" y2="198" stroke="#6A6A6A" marker-end="url(#arw)"/>
+  <line x1="476" y1="198" x2="730" y2="198" stroke="#6A6A6A" marker-end="url(#arw)"/>
+
+  <!-- Lane 2: Reads (blue) -->
+  <rect x="300" y="272" width="210" height="44" rx="9" fill="#FFFFFF" stroke="#0072B2" stroke-width="2"/>
+  <text x="405" y="290" font-size="12.5" font-weight="600" fill="#15161C" text-anchor="middle">Neon Data API (PostgREST)</text>
+  <text x="405" y="306" font-size="11" fill="#6A6A6A" text-anchor="middle">GET /schedules · /weeks · /teams</text>
+  <text x="546" y="262" font-size="11.5" font-weight="600" fill="#0072B2">Reads — bearer JWT, RLS-filtered</text>
+  <line x1="228" y1="294" x2="298" y2="294" stroke="#6A6A6A" marker-end="url(#arw)"/>
+  <line x1="510" y1="294" x2="730" y2="294" stroke="#6A6A6A" marker-end="url(#arw)"/>
+
+  <!-- Lane 3: Writes (vermillion) -->
+  <rect x="284" y="368" width="150" height="46" rx="9" fill="#FFFFFF" stroke="#D55E00" stroke-width="2"/>
+  <text x="359" y="386" font-size="12" font-weight="600" fill="#15161C" text-anchor="middle">public wrapper</text>
+  <text x="359" y="402" font-size="10.5" fill="#6A6A6A" text-anchor="middle">SECURITY INVOKER</text>
+  <rect x="470" y="368" width="150" height="46" rx="9" fill="#FFFFFF" stroke="#D55E00" stroke-width="2"/>
+  <text x="545" y="386" font-size="12" font-weight="600" fill="#15161C" text-anchor="middle">kc_private worker</text>
+  <text x="545" y="402" font-size="10.5" fill="#6A6A6A" text-anchor="middle">SECURITY DEFINER</text>
+  <text x="284" y="358" font-size="11.5" font-weight="600" fill="#D55E00">Writes — POST /rpc/*, validated + concurrency-checked</text>
+  <line x1="228" y1="391" x2="282" y2="391" stroke="#6A6A6A" marker-end="url(#arw)"/>
+  <line x1="434" y1="391" x2="468" y2="391" stroke="#6A6A6A" marker-end="url(#arw)"/>
+  <line x1="620" y1="391" x2="730" y2="391" stroke="#6A6A6A" marker-end="url(#arw)"/>
+</svg>

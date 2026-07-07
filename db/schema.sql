@@ -43,6 +43,12 @@ create extension if not exists pgcrypto;  -- gen_random_uuid()
 -- Clean rebuild: drop app tables (and the old single-team objects) first.
 drop table if exists weeks, schedules, team_invites, team_members, teams, profiles cascade;
 drop schema if exists kc_private cascade;
+-- save_plan/save_actuals gained a p_known_updated_at arg and now return timestamptz
+-- (optimistic concurrency). plpgsql bodies aren't tracked as dependencies, so the
+-- old void-returning wrappers survive the kc_private drop — remove them explicitly
+-- so a re-apply doesn't leave a stale overload.
+drop function if exists save_plan(uuid, date, jsonb);
+drop function if exists save_actuals(uuid, date, jsonb);
 create schema kc_private;  -- internal workers + RLS helpers; never exposed by the Data API
 
 -- ===========================================================================
@@ -64,6 +70,7 @@ create table teams (
   owner_id    text not null,
   name        text not null,
   join_token  uuid not null default gen_random_uuid(),  -- secret; builds the invite link
+  plan        text not null default 'free' check (plan in ('free', 'pro')),  -- set only by the billing webhook
   created_at  timestamptz not null default now()
 );
 create index idx_teams_owner on teams(owner_id);
@@ -177,6 +184,84 @@ create policy invites_select on team_invites for select to authenticated
                and email = (select email from profiles where user_id = current_uid()) ) );
 
 -- ===========================================================================
+-- Payload validation (defense-in-depth). The client already normalises days /
+-- actuals, but the Data API lets ANY authenticated caller POST /rpc/save_plan
+-- with an arbitrary body, so the DB must not trust the blob: a hostile or buggy
+-- client could otherwise store multi-megabyte or malformed jsonb that other
+-- members' clients then ingest. PT422/PT413 map to those HTTP statuses in the
+-- Data API (PostgREST) and carry the message to the caller.
+-- ===========================================================================
+create or replace function kc_private._require_days(p_days jsonb)
+returns void language plpgsql immutable set search_path = public as $$
+begin
+  if p_days is null or jsonb_typeof(p_days) <> 'array' then
+    raise exception 'days must be a JSON array' using errcode = 'PT422';
+  end if;
+  if jsonb_array_length(p_days) <> 7 then
+    raise exception 'days must have exactly 7 entries' using errcode = 'PT422';
+  end if;
+  if pg_column_size(p_days) > 16384 then
+    raise exception 'days payload too large' using errcode = 'PT413';
+  end if;
+  -- Each day is an object with only the expected keys; blocks (if present) is a
+  -- bounded array (a day has at most 32 half-hour slots; 48 leaves slack).
+  if exists (
+    select 1 from jsonb_array_elements(p_days) as e(v)
+    where jsonb_typeof(e.v) <> 'object'
+       or exists (select 1 from jsonb_object_keys(e.v) as k(key) where k.key not in ('blocks', 'actualHours'))
+       or (e.v ? 'blocks' and jsonb_typeof(e.v -> 'blocks') <> 'array')
+       or (e.v ? 'blocks' and jsonb_array_length(e.v -> 'blocks') > 48)
+  ) then
+    raise exception 'invalid day object' using errcode = 'PT422';
+  end if;
+end $$;
+
+create or replace function kc_private._require_actuals(p_actuals jsonb)
+returns void language plpgsql immutable set search_path = public as $$
+begin
+  if p_actuals is null or jsonb_typeof(p_actuals) <> 'array' then
+    raise exception 'actuals must be a JSON array' using errcode = 'PT422';
+  end if;
+  if jsonb_array_length(p_actuals) <> 7 then
+    raise exception 'actuals must have exactly 7 entries' using errcode = 'PT422';
+  end if;
+  if pg_column_size(p_actuals) > 4096 then
+    raise exception 'actuals payload too large' using errcode = 'PT413';
+  end if;
+  if exists (
+    select 1 from jsonb_array_elements(p_actuals) as e(v)
+    where jsonb_typeof(e.v) not in ('string', 'number', 'null')
+  ) then
+    raise exception 'invalid actuals entry' using errcode = 'PT422';
+  end if;
+end $$;
+
+-- ===========================================================================
+-- Billing / free-tier limit. The paywall lives in Postgres like every other
+-- rule: a free team caps how many members it can hold; 'pro' (set only by the
+-- Stripe webhook, via a privileged connection — never a user-callable RPC)
+-- lifts the cap. Enforced at every point a member is actually added, so it can't
+-- be bypassed by hitting an RPC directly.
+-- ===========================================================================
+create or replace function kc_private._member_limit_for(p_plan text)
+returns int language sql immutable as $$
+  select case when p_plan = 'pro' then 1000000 else 3 end;   -- free = up to 3 joined members
+$$;
+
+-- Raise (PT402 -> HTTP 402 Payment Required) if the team is at its member cap.
+create or replace function kc_private._guard_member_limit(p_team_id uuid)
+returns void language plpgsql security definer set search_path = public as $$
+  declare v_plan text; v_count int; v_limit int;
+begin
+  select plan into v_plan from teams where id = p_team_id;
+  v_limit := kc_private._member_limit_for(v_plan);
+  select count(*) into v_count from team_members where team_id = p_team_id;
+  if v_count >= v_limit then
+    raise exception 'team member limit reached — upgrade to add more' using errcode = 'PT402';
+  end if;
+end $$;
+
+-- ===========================================================================
 -- Workers (kc_private, SECURITY DEFINER) — original privileged logic; they trust
 -- p_uid, which the public wrappers derive from the verified JWT.
 -- ===========================================================================
@@ -190,7 +275,7 @@ begin
   on conflict (user_id) do update set email = excluded.email;
   if not exists (select 1 from teams where owner_id = p_uid) then
     insert into teams (owner_id, name)
-    values (p_uid, coalesce(nullif(split_part(lower(p_email), '@', 1), ''), 'My team'));
+    values (p_uid, left(coalesce(nullif(split_part(lower(p_email), '@', 1), ''), 'My team'), 80));
   end if;
   select * into r from profiles where user_id = p_uid;
   return r;
@@ -201,7 +286,7 @@ returns public.teams language plpgsql security definer set search_path = public 
   declare tm public.teams;
 begin
   insert into teams (owner_id, name)
-  values (p_uid, coalesce(nullif(trim(p_name), ''), 'Team'))
+  values (p_uid, left(coalesce(nullif(trim(p_name), ''), 'Team'), 80))
   returning * into tm;
   return tm;
 end $$;
@@ -210,7 +295,7 @@ create or replace function kc_private._rename_team(p_uid text, p_team_id uuid, p
 returns public.teams language plpgsql security definer set search_path = public as $$
   declare tm public.teams;
 begin
-  update teams set name = coalesce(nullif(trim(p_name), ''), name)
+  update teams set name = left(coalesce(nullif(trim(p_name), ''), name), 80)
     where id = p_team_id and owner_id = p_uid
     returning * into tm;
   if tm is null then raise exception 'not your team'; end if;
@@ -229,6 +314,7 @@ begin
   if not exists (select 1 from teams where id = p_team_id and owner_id = p_uid) then
     raise exception 'not your team';
   end if;
+  perform kc_private._guard_member_limit(p_team_id);  -- early feedback before inviting
   insert into team_invites (team_id, email) values (p_team_id, lower(p_email))
   on conflict (team_id, email) do update set status = 'pending', created_at = now();
 end $$;
@@ -241,6 +327,7 @@ begin
   select * into inv from team_invites
     where id = p_invite_id and email = my_email and status = 'pending';
   if inv is null then raise exception 'invite not found'; end if;
+  perform kc_private._guard_member_limit(inv.team_id);  -- authoritative check at join time
   insert into team_members (team_id, user_id, email)
     values (inv.team_id, p_uid, my_email)
     on conflict (team_id, user_id) do update set email = excluded.email;
@@ -271,7 +358,7 @@ begin
     assignee := p_assigned_user_id;
   end if;
   insert into schedules (team_id, assigned_user_id, name, color_var)
-  values (p_team_id, assignee, coalesce(p_name, 'Schedule'), coalesce(p_color, 'accent'))
+  values (p_team_id, assignee, left(coalesce(p_name, 'Schedule'), 80), left(coalesce(p_color, 'accent'), 32))
   returning * into s;
   return s;
 end $$;
@@ -294,24 +381,36 @@ begin
     end if;
     update schedules set assigned_user_id = p_assigned_user_id where id = p_schedule_id;
   end if;
-  update schedules set name = coalesce(p_name, name), color_var = coalesce(p_color, color_var)
+  update schedules set name = coalesce(left(p_name, 80), name), color_var = coalesce(left(p_color, 32), color_var)
     where id = p_schedule_id;
   select * into s from schedules where id = p_schedule_id;
   return s;
 end $$;
 
-create or replace function kc_private._save_plan(p_uid text, p_schedule_id uuid, p_week_start date, p_days jsonb)
-returns void language plpgsql security definer set search_path = public as $$
+-- p_known_updated_at = the weeks.updated_at the client last saw for this row.
+-- If the stored row is newer, another device wrote in between: raise 'stale write'
+-- (PT409) instead of silently clobbering. Passing null skips the check (first
+-- write for the week, or a client that opts out). Returns the new updated_at so
+-- the caller can keep its optimistic token fresh without a re-read.
+create or replace function kc_private._save_plan(p_uid text, p_schedule_id uuid, p_week_start date,
+                                                 p_days jsonb, p_known_updated_at timestamptz default null)
+returns timestamptz language plpgsql security definer set search_path = public as $$
   declare existing jsonb; merged jsonb; has_assignee boolean; tid uuid; aid text;
+          cur_upd timestamptz; new_upd timestamptz;
 begin
+  perform kc_private._require_days(p_days);
   select team_id, assigned_user_id into tid, aid from schedules where id = p_schedule_id;
   if tid is null or not exists (select 1 from teams where id = tid and owner_id = p_uid) then
     raise exception 'not your schedule';
   end if;
+  select updated_at into cur_upd from weeks where schedule_id = p_schedule_id and week_start = p_week_start;
+  if p_known_updated_at is not null and cur_upd is not null and cur_upd > p_known_updated_at then
+    raise exception 'stale write' using errcode = 'PT409';
+  end if;
   has_assignee := aid is not null;
   if has_assignee then
     -- a member owns the actuals, so carry over each day's existing actualHours
-    select days into existing from weeks where schedule_id = p_schedule_id and week_start = p_week_start;
+    existing := (select days from weeks where schedule_id = p_schedule_id and week_start = p_week_start);
     select jsonb_agg(
              (p_days -> idx) || jsonb_build_object('actualHours',
                coalesce(existing -> idx ->> 'actualHours', p_days -> idx ->> 'actualHours', ''))
@@ -321,28 +420,40 @@ begin
   else
     merged := p_days;  -- no assignee: the owner controls both plan and actuals
   end if;
+  -- clock_timestamp() (not now()) so updated_at reflects the real instant of the
+  -- write: two writes in the same transaction still get distinct, increasing
+  -- stamps, which is what the optimistic-concurrency check above compares.
   insert into weeks (schedule_id, week_start, days, updated_at)
-    values (p_schedule_id, p_week_start, merged, now())
-    on conflict (schedule_id, week_start) do update set days = excluded.days, updated_at = now();
+    values (p_schedule_id, p_week_start, merged, clock_timestamp())
+    on conflict (schedule_id, week_start) do update set days = excluded.days, updated_at = clock_timestamp()
+    returning updated_at into new_upd;
+  return new_upd;
 end $$;
 
-create or replace function kc_private._save_actuals(p_uid text, p_schedule_id uuid, p_week_start date, p_actuals jsonb)
-returns void language plpgsql security definer set search_path = public as $$
-  declare existing jsonb; merged jsonb;
+create or replace function kc_private._save_actuals(p_uid text, p_schedule_id uuid, p_week_start date,
+                                                    p_actuals jsonb, p_known_updated_at timestamptz default null)
+returns timestamptz language plpgsql security definer set search_path = public as $$
+  declare existing jsonb; merged jsonb; cur_upd timestamptz; new_upd timestamptz;
 begin
+  perform kc_private._require_actuals(p_actuals);
   if not exists (select 1 from schedules where id = p_schedule_id and assigned_user_id = p_uid) then
     raise exception 'not assigned to you';
   end if;
-  select days into existing from weeks where schedule_id = p_schedule_id and week_start = p_week_start;
+  select days, updated_at into existing, cur_upd from weeks where schedule_id = p_schedule_id and week_start = p_week_start;
   if existing is null then raise exception 'no plan for this week yet'; end if;
+  if p_known_updated_at is not null and cur_upd is not null and cur_upd > p_known_updated_at then
+    raise exception 'stale write' using errcode = 'PT409';
+  end if;
   select jsonb_agg(
            (existing -> idx) || jsonb_build_object('actualHours',
              coalesce(p_actuals ->> idx, existing -> idx ->> 'actualHours', ''))
            order by idx)
     into merged
     from generate_series(0, jsonb_array_length(existing) - 1) as t(idx);
-  update weeks set days = merged, updated_at = now()
-    where schedule_id = p_schedule_id and week_start = p_week_start;
+  update weeks set days = merged, updated_at = clock_timestamp()
+    where schedule_id = p_schedule_id and week_start = p_week_start
+    returning updated_at into new_upd;
+  return new_upd;
 end $$;
 
 create or replace function kc_private._delete_schedule(p_uid text, p_schedule_id uuid)
@@ -402,6 +513,10 @@ begin
   if tm is null then raise exception 'invalid or expired invite link'; end if;
   select email into my_email from profiles where user_id = p_uid;
   if tm.owner_id <> p_uid then
+    -- only counts against the cap when actually adding a new member (not a re-join)
+    if not exists (select 1 from team_members where team_id = tm.id and user_id = p_uid) then
+      perform kc_private._guard_member_limit(tm.id);
+    end if;
     insert into team_members (team_id, user_id, email)
     values (tm.id, p_uid, my_email)
     on conflict (team_id, user_id) do update set email = excluded.email;
@@ -456,13 +571,15 @@ returns public.schedules language plpgsql security invoker set search_path = pub
 begin return kc_private._update_schedule(current_uid(), p_schedule_id, p_name, p_color,
                                          p_assigned_user_id, p_clear_assignee); end $$;
 
-create or replace function save_plan(p_schedule_id uuid, p_week_start date, p_days jsonb)
-returns void language plpgsql security invoker set search_path = public as $$
-begin perform kc_private._save_plan(current_uid(), p_schedule_id, p_week_start, p_days); end $$;
+create or replace function save_plan(p_schedule_id uuid, p_week_start date, p_days jsonb,
+                                     p_known_updated_at timestamptz default null)
+returns timestamptz language plpgsql security invoker set search_path = public as $$
+begin return kc_private._save_plan(current_uid(), p_schedule_id, p_week_start, p_days, p_known_updated_at); end $$;
 
-create or replace function save_actuals(p_schedule_id uuid, p_week_start date, p_actuals jsonb)
-returns void language plpgsql security invoker set search_path = public as $$
-begin perform kc_private._save_actuals(current_uid(), p_schedule_id, p_week_start, p_actuals); end $$;
+create or replace function save_actuals(p_schedule_id uuid, p_week_start date, p_actuals jsonb,
+                                        p_known_updated_at timestamptz default null)
+returns timestamptz language plpgsql security invoker set search_path = public as $$
+begin return kc_private._save_actuals(current_uid(), p_schedule_id, p_week_start, p_actuals, p_known_updated_at); end $$;
 
 create or replace function delete_schedule(p_schedule_id uuid)
 returns void language plpgsql security invoker set search_path = public as $$
@@ -498,7 +615,7 @@ grant usage on schema public to authenticated;
 grant usage on schema kc_private to authenticated;
 grant select on profiles, team_members, schedules, weeks, team_invites to authenticated;
 -- teams: every column except join_token (the invite secret; owners fetch it via RPC)
-grant select (id, owner_id, name, created_at) on teams to authenticated;
+grant select (id, owner_id, name, plan, created_at) on teams to authenticated;
 grant execute on all functions in schema public to authenticated;
 grant execute on all functions in schema kc_private to authenticated;
 
