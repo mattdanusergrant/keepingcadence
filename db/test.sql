@@ -22,7 +22,9 @@ declare
   v_team   uuid;
   v_sched  uuid;   -- owner-authored, no assignee
   v_asgn   uuid;   -- assigned to member-1
-  v_days   jsonb := (select jsonb_agg(jsonb_build_object('blocks', jsonb_build_array(360, 390), 'actualHours', ''))
+  v_days   jsonb := (select jsonb_agg(jsonb_build_object('ranges', jsonb_build_array(jsonb_build_object('s', 480, 'e', 960)), 'actualHours', ''))
+                     from generate_series(1, 7));
+  v_legacy jsonb := (select jsonb_agg(jsonb_build_object('blocks', jsonb_build_array(480, 510), 'actualHours', ''))
                      from generate_series(1, 7));
   v_bad    jsonb;
   v_u1     timestamptz;
@@ -41,9 +43,14 @@ begin
   -- #6 — payload validation
   -- ========================================================================
 
-  -- Valid 7-day payload is accepted and returns an updated_at.
+  -- Valid 7-day payload (ranges shape) is accepted and returns an updated_at.
   v_u1 := kc_private._save_plan('owner-1', v_sched, date '2026-07-06', v_days);
   if v_u1 is null then raise exception 'FAIL: valid save_plan returned null updated_at'; end if;
+
+  -- Legacy blocks-shape payload is still accepted (backward compatibility).
+  if kc_private._save_plan('owner-1', v_sched, date '2026-06-29', v_legacy) is null then
+    raise exception 'FAIL: legacy blocks payload was rejected';
+  end if;
 
   -- Wrong length (6 days) is rejected.
   ok := false;

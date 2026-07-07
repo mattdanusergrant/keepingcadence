@@ -98,9 +98,9 @@ vm.runInContext(scriptSrc, ctx, { filename: 'app.html#script' });
 
 // Function declarations attach to the sandbox global; pull out the ones we test.
 const {
-  hhmmToMinutes, minutesToHhmm, legacyRangeToBlocks, normalizeDay,
+  hhmmToMinutes, minutesToHhmm, normalizeRanges, legacyBlocksToRanges, normalizeDay,
   migrateState, encodeStateToHash, decodeStateFromHash, escapeHtml,
-  daySegments, toggleBlock, fmtHoursNumber, isNetworkError, loadDirtyIds
+  daySegments, estimatedMinutes, fmtHoursNumber, isNetworkError, loadDirtyIds
 } = ctx;
 
 // --- Tiny test runner -------------------------------------------------------
@@ -147,47 +147,63 @@ test('hhmm <-> minutes round-trips across the day', () => {
   }
 });
 
-// --- legacy range -> 30-min blocks ------------------------------------------
+// --- normalizeRanges (sort / clamp / merge) ---------------------------------
 
-test('legacyRangeToBlocks expands a span into aligned blocks', () => {
-  // 09:00–11:00 => 09:00, 09:30, 10:00, 10:30 (end-exclusive)
-  deepEq(legacyRangeToBlocks('09:00', '11:00'), [540, 570, 600, 630]);
+test('normalizeRanges sorts, clamps to the day window, and merges overlaps/adjacency', () => {
+  // 1400>top(1320) clamped; unsorted; the 900-1020 and 1020-1080 ranges are adjacent -> merge.
+  deepEq(normalizeRanges([{ s: 1020, e: 1080 }, { s: 900, e: 1020 }, { s: 60, e: 400 }]),
+    [{ s: 360, e: 400 }, { s: 900, e: 1080 }]);
 });
 
-test('legacyRangeToBlocks rejects empty/inverted ranges', () => {
-  deepEq(legacyRangeToBlocks('10:00', '10:00'), []);
-  deepEq(legacyRangeToBlocks('11:00', '09:00'), []);
-  deepEq(legacyRangeToBlocks(null, null), []);
+test('normalizeRanges drops invalid ranges (end <= start, NaN)', () => {
+  deepEq(normalizeRanges([{ s: 600, e: 600 }, { s: 700, e: 600 }, { s: NaN, e: 5 }]), []);
 });
 
-test('legacyRangeToBlocks never emits blocks before DAY_START', () => {
-  const blocks = legacyRangeToBlocks('05:00', '07:00');
-  assert(blocks.every(m => m >= 360), 'all blocks at/after 06:00');
+// --- legacy blocks -> ranges (unambiguous: legacy blocks were 30-min slots) --
+
+test('legacyBlocksToRanges converts 30-min slot starts to merged ranges', () => {
+  // 480(8:00) + 510(8:30) each cover 30 min and are contiguous -> one 8:00-9:00 range.
+  deepEq(legacyBlocksToRanges([480, 510]), [{ s: 480, e: 540 }]);
+  // a gap survives: 480-510 and 600-630 stay separate.
+  deepEq(legacyBlocksToRanges([600, 480]), [{ s: 480, e: 510 }, { s: 600, e: 630 }]);
 });
 
 // --- normalizeDay -----------------------------------------------------------
 
-test('normalizeDay dedupes, sorts, and clamps blocks to the day window', () => {
-  const d = normalizeDay({ blocks: [600, 360, 600, 60, 1400], actualHours: 3 });
-  // 60 (before 06:00) and 1400 (after 22:00, top=1320) dropped; dupes removed; sorted.
-  deepEq(d.blocks, [360, 600]);
+test('normalizeDay keeps a ranges payload (sorted/merged/clamped)', () => {
+  const d = normalizeDay({ ranges: [{ s: 480, e: 960 }], actualHours: 3 });
+  deepEq(d.ranges, [{ s: 480, e: 960 }]);
   assert.strictEqual(d.actualHours, '3'); // coerced to string
 });
 
-test('normalizeDay migrates legacy start/end when blocks absent', () => {
-  const d = normalizeDay({ start: '09:00', end: '10:00' });
-  deepEq(d.blocks, [540, 570]);
+test('normalizeDay migrates legacy blocks to ranges', () => {
+  const d = normalizeDay({ blocks: [540, 570] }); // 9:00 + 9:30 slots -> 9:00-10:00
+  deepEq(d.ranges, [{ s: 540, e: 600 }]);
   assert.strictEqual(d.actualHours, '');
+});
+
+test('normalizeDay migrates oldest start/end shape to a range', () => {
+  deepEq(normalizeDay({ start: '09:00', end: '10:00' }).ranges, [{ s: 540, e: 600 }]);
 });
 
 test('normalizeDay tolerates garbage input', () => {
   const d = normalizeDay(undefined);
-  deepEq(d.blocks, []);
+  deepEq(d.ranges, []);
   assert.strictEqual(d.actualHours, '');
 });
 
 test('normalizeDay preserves an explicit zero actualHours', () => {
-  assert.strictEqual(normalizeDay({ blocks: [], actualHours: 0 }).actualHours, '0');
+  assert.strictEqual(normalizeDay({ ranges: [], actualHours: 0 }).actualHours, '0');
+});
+
+test('estimatedMinutes sums range durations', () => {
+  assert.strictEqual(estimatedMinutes({ ranges: [{ s: 480, e: 960 }, { s: 1020, e: 1080 }] }), 540);
+  assert.strictEqual(estimatedMinutes({ ranges: [] }), 0);
+});
+
+test('daySegments returns the day ranges as {s,e} segments', () => {
+  deepEq(daySegments(normalizeDay({ ranges: [{ s: 480, e: 510 }, { s: 600, e: 630 }] })),
+    [{ s: 480, e: 510 }, { s: 600, e: 630 }]);
 });
 
 // --- migrateState -----------------------------------------------------------
@@ -244,7 +260,7 @@ test('encode -> decode round-trips a full state', () => {
     activeId: 'sched-1',
     schedules: [{
       id: 'sched-1', name: 'Nanny · Ana', colorVar: 'h3',
-      days: Array.from({ length: 7 }, (_, i) => ({ blocks: i === 0 ? [360, 390] : [], actualHours: '' }))
+      days: Array.from({ length: 7 }, (_, i) => ({ ranges: i === 0 ? [{ s: 480, e: 960 }] : [], actualHours: '' }))
     }]
   };
   const hash = encodeStateToHash(original);
@@ -252,7 +268,7 @@ test('encode -> decode round-trips a full state', () => {
   const decoded = decodeStateFromHash(hash);
   assert.strictEqual(decoded.weekStart, original.weekStart);
   assert.strictEqual(decoded.schedules[0].name, 'Nanny · Ana'); // unicode survives
-  deepEq(decoded.schedules[0].days[0].blocks, [360, 390]);
+  deepEq(decoded.schedules[0].days[0].ranges, [{ s: 480, e: 960 }]);
 });
 
 test('decodeStateFromHash rejects non-share hashes', () => {
@@ -269,23 +285,6 @@ test('escapeHtml neutralises all five HTML-significant chars', () => {
     '&lt;img src=x onerror=&quot;a&quot; onload=&#39;b&#39;&gt;&amp;'
   );
   assert.strictEqual(escapeHtml(null), '');
-});
-
-// --- day segment merging (timeline display) ---------------------------------
-
-test('daySegments merges contiguous blocks and splits on gaps', () => {
-  const segs = daySegments({ blocks: [360, 390, 420, 480] }); // gap between 420->480
-  deepEq(segs, [{ s: 360, e: 450 }, { s: 480, e: 510 }]);
-});
-
-// --- toggleBlock (tap-to-toggle grid) ---------------------------------------
-
-test('toggleBlock adds then removes a block, keeping order', () => {
-  const day = { blocks: [420] };
-  toggleBlock(day, 0);           // idx 0 => 06:00 (360)
-  deepEq(day.blocks, [360, 420]);
-  toggleBlock(day, 0);           // toggle off
-  deepEq(day.blocks, [420]);
 });
 
 // --- fmtHoursNumber ---------------------------------------------------------
