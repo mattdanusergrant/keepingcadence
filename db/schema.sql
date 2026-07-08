@@ -203,14 +203,17 @@ begin
   if pg_column_size(p_days) > 16384 then
     raise exception 'days payload too large' using errcode = 'PT413';
   end if;
-  -- Each day is an object with only the expected keys; blocks (if present) is a
-  -- bounded array (a day has at most 32 half-hour slots; 48 leaves slack).
+  -- Each day is an object with only the expected keys. `ranges` is the current
+  -- shape ([{s,e}] start/end pairs); `blocks` is accepted for legacy data. Both
+  -- are bounded arrays (a day can't hold many distinct time blocks).
   if exists (
     select 1 from jsonb_array_elements(p_days) as e(v)
     where jsonb_typeof(e.v) <> 'object'
-       or exists (select 1 from jsonb_object_keys(e.v) as k(key) where k.key not in ('blocks', 'actualHours'))
+       or exists (select 1 from jsonb_object_keys(e.v) as k(key) where k.key not in ('blocks', 'ranges', 'actualHours'))
        or (e.v ? 'blocks' and jsonb_typeof(e.v -> 'blocks') <> 'array')
        or (e.v ? 'blocks' and jsonb_array_length(e.v -> 'blocks') > 48)
+       or (e.v ? 'ranges' and jsonb_typeof(e.v -> 'ranges') <> 'array')
+       or (e.v ? 'ranges' and jsonb_array_length(e.v -> 'ranges') > 24)
   ) then
     raise exception 'invalid day object' using errcode = 'PT422';
   end if;

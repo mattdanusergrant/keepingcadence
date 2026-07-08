@@ -419,6 +419,27 @@
     color: var(--on-accent); font-weight: 600;
   }
 
+  /* Start/End time-range picker */
+  .ranges { display: flex; flex-direction: column; gap: 0.5rem; }
+  .range-row { display: flex; align-items: center; gap: 0.5rem; }
+  .range-row .time-select { flex: 1 1 0; min-width: 0; }
+  .range-row .range-sep { color: var(--muted); font-size: 0.9rem; flex: none; }
+  .range-row.invalid .range-end { border-color: var(--warning); color: var(--warning); }
+  .range-remove {
+    font: inherit; font-size: 1.1rem; line-height: 1; flex: none;
+    width: 2rem; height: 2rem; padding: 0;
+    background: transparent; border: 1px solid var(--border);
+    color: var(--muted); border-radius: 8px; cursor: pointer;
+  }
+  .range-remove:hover { border-color: var(--warning); color: var(--warning); }
+  .range-add {
+    font: inherit; font-size: 0.85rem; margin-top: 0.6rem;
+    padding: 0.4rem 0.75rem; align-self: flex-start;
+    background: transparent; border: 1px dashed var(--border);
+    color: var(--accent); border-radius: 8px; cursor: pointer;
+  }
+  .range-add:hover { border-color: var(--accent); border-style: solid; }
+
   body.view-mode .editable { display: none; }
   body.view-mode .day.editing .editable { display: block; }
   body.view-mode .day.editing .editable.day-line { display: flex; }
@@ -952,7 +973,12 @@ const T = {
     weekOf: 'Week of',
     hours: 'Hours',
     dayOff: 'Day Off',
-    tapToSetHours: 'Tap to set hours',
+    setHoursHint: 'Set a start and end time',
+    toWord: 'to',
+    addBlock: '+ add time block',
+    removeBlock: 'Remove this time block',
+    startLabel: 'Start time',
+    endLabel: 'End time',
     actualHoursLabel: 'Hours worked',
     weekScheduledLabel: 'Scheduled',
     masterView: 'All',
@@ -1053,7 +1079,12 @@ const T = {
     weekOf: 'Semana del',
     hours: 'Horas',
     dayOff: 'Día libre',
-    tapToSetHours: 'Toca para fijar las horas',
+    setHoursHint: 'Fija una hora de inicio y fin',
+    toWord: 'a',
+    addBlock: '+ añadir bloque de tiempo',
+    removeBlock: 'Quitar este bloque de tiempo',
+    startLabel: 'Hora de inicio',
+    endLabel: 'Hora de fin',
     actualHoursLabel: 'Horas trabajadas',
     weekScheduledLabel: 'Programado',
     masterView: 'Todos',
@@ -1146,7 +1177,7 @@ let lastSavedAt = null;
 let editingDayIndex = null;
 
 function emptyDay() {
-  return { blocks: [], actualHours: '' };
+  return { ranges: [], actualHours: '' };
 }
 
 function hhmmToMinutes(hhmm) {
@@ -1163,33 +1194,51 @@ function minutesToHhmm(mins) {
   return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
 }
 
-// Legacy data stored a single start/end span; expand it into 30-min blocks.
-function legacyRangeToBlocks(start, end) {
-  const base = hhmmToMinutes(DAY_START);
-  const s = hhmmToMinutes(start), e = hhmmToMinutes(end);
-  if (s === null || e === null || e <= s) return [];
-  const first = base + Math.round((s - base) / GRID_STEP) * GRID_STEP;
-  const lastEnd = base + Math.round((e - base) / GRID_STEP) * GRID_STEP;
-  const out = [];
-  for (let m = first; m < lastEnd; m += GRID_STEP) if (m >= base) out.push(m);
-  return out;
+// A day's plan is a list of time ranges: [{ s, e }] in minutes-from-midnight
+// (gaps allowed). Clamp to the day window, drop invalid, sort, and merge any
+// overlapping/adjacent ranges into clean non-overlapping segments.
+function normalizeRanges(list) {
+  const base = hhmmToMinutes(DAY_START), top = hhmmToMinutes(DAY_END);
+  const cleaned = (list || [])
+    .map(r => ({ s: Number(r && r.s), e: Number(r && r.e) }))
+    .filter(r => Number.isFinite(r.s) && Number.isFinite(r.e) && r.e > r.s)
+    .map(r => ({ s: Math.max(base, r.s), e: Math.min(top, r.e) }))
+    .filter(r => r.e > r.s)
+    .sort((a, b) => a.s - b.s);
+  const merged = [];
+  for (const r of cleaned) {
+    const last = merged[merged.length - 1];
+    if (last && r.s <= last.e) last.e = Math.max(last.e, r.e);
+    else merged.push({ s: r.s, e: r.e });
+  }
+  return merged;
+}
+
+// Legacy plans stored 30-minute block starts (GRID_STEP was 30). Each block
+// covered [b, b+30]; converting to ranges at that known width is exact — which is
+// why the data's shape (`ranges` vs `blocks`) unambiguously marks its version.
+function legacyBlocksToRanges(blocks) {
+  const nums = (blocks || []).map(Number).filter(Number.isFinite);
+  return normalizeRanges(nums.map(b => ({ s: b, e: b + 30 })));
 }
 
 function normalizeDay(d) {
   d = d || {};
-  const base = hhmmToMinutes(DAY_START), top = hhmmToMinutes(DAY_END);
-  let blocks = Array.isArray(d.blocks)
-    ? d.blocks.map(Number).filter(Number.isFinite)
-    : legacyRangeToBlocks(d.start, d.end);
-  blocks = [...new Set(blocks)].filter(m => m >= base && m < top).sort((a, b) => a - b);
+  let ranges;
+  if (Array.isArray(d.ranges)) ranges = normalizeRanges(d.ranges);
+  else if (Array.isArray(d.blocks)) ranges = legacyBlocksToRanges(d.blocks);       // pre-ranges data
+  else if (d.start || d.end) ranges = normalizeRanges([{ s: hhmmToMinutes(d.start), e: hhmmToMinutes(d.end) }]); // oldest single-span data
+  else ranges = [];
   return {
-    blocks,
+    ranges,
     actualHours: (d.actualHours === 0 || d.actualHours) ? String(d.actualHours) : ''
   };
 }
 
+function dayRanges(day) { return Array.isArray(day.ranges) ? day.ranges : []; }
+
 function estimatedMinutes(day) {
-  return (Array.isArray(day.blocks) ? day.blocks.length : 0) * GRID_STEP;
+  return dayRanges(day).reduce((total, r) => total + (r.e - r.s), 0);
 }
 
 function fmtHoursNumber(h) {
@@ -1387,35 +1436,11 @@ function fmtDayDateShort(iso, offset) {
   return `${m}/${day}`;
 }
 
-// --- Tap-to-toggle time grid ------------------------------------------------
-// A day's plan is a set of independent 30-minute blocks (gaps allowed). Each
-// tap toggles one block; contiguous blocks merge into segments for display.
-function gridBlockCount() {
-  return (hhmmToMinutes(DAY_END) - hhmmToMinutes(DAY_START)) / GRID_STEP;
-}
-function blockMinForIdx(idx) { return hhmmToMinutes(DAY_START) + idx * GRID_STEP; }
-function dayBlocks(day) { return Array.isArray(day.blocks) ? day.blocks : []; }
-function isBlockSelected(day, idx) { return dayBlocks(day).indexOf(blockMinForIdx(idx)) !== -1; }
-
-function toggleBlock(day, idx) {
-  const m = blockMinForIdx(idx);
-  const blocks = dayBlocks(day).slice();
-  const at = blocks.indexOf(m);
-  if (at >= 0) blocks.splice(at, 1);
-  else { blocks.push(m); blocks.sort((a, b) => a - b); }
-  day.blocks = blocks;
-}
-
-// Merge contiguous selected blocks into [{ s, e }] minute segments.
+// --- Start/End time ranges --------------------------------------------------
+// A day's plan is a list of [{ s, e }] ranges (gaps allowed for split shifts).
+// The ranges are already normalized (sorted, non-overlapping), so segments = ranges.
 function daySegments(day) {
-  const sorted = dayBlocks(day).slice().sort((a, b) => a - b);
-  const segs = [];
-  for (const m of sorted) {
-    const last = segs[segs.length - 1];
-    if (last && m === last.e) last.e = m + GRID_STEP;
-    else segs.push({ s: m, e: m + GRID_STEP });
-  }
-  return segs;
+  return dayRanges(day).map(r => ({ s: r.s, e: r.e }));
 }
 
 // Compact, unambiguous label: en "6a" / "6:30a" / "12p" / "9:30p"; es 24h.
@@ -1429,36 +1454,48 @@ function blockLabel(min) {
 
 function gridReadoutHtml(day) {
   const segs = daySegments(day);
-  if (!segs.length) return `<span class="grid-readout hint">${escapeHtml(t('tapToSetHours'))}</span>`;
+  if (!segs.length) return `<span class="grid-readout hint">${escapeHtml(t('setHoursHint'))}</span>`;
   const parts = segs.map(s => `${blockLabel(s.s)}–${blockLabel(s.e)}`).join(', ');
   const hrs = estimatedHoursDisplay(day);
   return `<span class="grid-readout">${escapeHtml(parts)}${hrs ? ` · ${escapeHtml(hrs)}` : ''}</span>`;
 }
 
-function dayGridFieldHtml(day, i) {
-  const n = gridBlockCount();
-  let cells = '';
-  for (let idx = 0; idx < n; idx++) {
-    cells += `<button type="button" class="tblock${isBlockSelected(day, idx) ? ' sel' : ''}" data-block="${idx}">${escapeHtml(blockLabel(blockMinForIdx(idx)))}</button>`;
-  }
+// One Start–End picker row. `r` is a range {s,e} in minutes, or null for a blank
+// (newly added) row. Options step every 15 minutes across the day window.
+function rangeRowHtml(r) {
+  const startSel = r ? minutesToHhmm(r.s) : '';
+  const endSel = r ? minutesToHhmm(r.e) : '';
+  return `<div class="range-row">
+    <select class="range-start time-select" aria-label="${escapeHtml(t('startLabel'))}">${timeOptionsHtml(startSel, DAY_START, DAY_END)}</select>
+    <span class="range-sep">${escapeHtml(t('toWord'))}</span>
+    <select class="range-end time-select" aria-label="${escapeHtml(t('endLabel'))}">${timeOptionsHtml(endSel, DAY_START, DAY_END)}</select>
+    <button type="button" class="range-remove" aria-label="${escapeHtml(t('removeBlock'))}">×</button>
+  </div>`;
+}
+
+function dayRangesFieldHtml(day, i) {
+  const segs = daySegments(day);
+  const rows = segs.length ? segs.map(rangeRowHtml).join('') : rangeRowHtml(null);
   return `<div class="field">
     <div class="grid-head">
       ${gridReadoutHtml(day)}
       <button type="button" class="dayoff-btn" data-dayoff="${i}">${escapeHtml(t('dayOff'))}</button>
     </div>
-    <div class="time-grid">${cells}</div>
+    <div class="ranges">${rows}</div>
+    <button type="button" class="range-add">${escapeHtml(t('addBlock'))}</button>
   </div>`;
 }
 
-// After a day opens, bring the selected span (or the morning) into view in the
-// horizontally-scrolling grid.
-function scrollGridToSelection() {
-  if (editingDayIndex === null) return;
-  const grid = document.querySelector('.day.editing .time-grid');
-  if (!grid) return;
-  const defaultIdx = Math.max(0, Math.round((hhmmToMinutes('08:00') - hhmmToMinutes(DAY_START)) / GRID_STEP));
-  const target = grid.querySelector('.tblock.sel') || grid.children[defaultIdx];
-  if (target) grid.scrollLeft = Math.max(0, target.offsetLeft - grid.clientWidth * 0.2);
+// Read every Start–End row in a day's editor back into normalized ranges.
+function readRangesFromDom(dayEl) {
+  const list = [];
+  dayEl.querySelectorAll('.ranges .range-row').forEach(row => {
+    const s = hhmmToMinutes(row.querySelector('.range-start').value);
+    const e = hhmmToMinutes(row.querySelector('.range-end').value);
+    row.classList.toggle('invalid', s !== null && e !== null && e <= s);
+    if (s !== null && e !== null && e > s) list.push({ s, e });
+  });
+  return normalizeRanges(list);
 }
 
 function dayTimesRowHtml(day) {
@@ -1727,7 +1764,7 @@ function render() {
         ${dayActualRowHtml(day)}
       </div>
       <div class="editable">
-        ${canEditPlan ? (editingDayIndex === i ? dayGridFieldHtml(day, i) : '') : planRecapHtml(day)}
+        ${canEditPlan ? (editingDayIndex === i ? dayRangesFieldHtml(day, i) : '') : planRecapHtml(day)}
         ${canEditActuals ? `
         <div class="field">
           <label>${escapeHtml(t('actualHoursLabel'))}</label>
@@ -1981,6 +2018,25 @@ document.getElementById('days').addEventListener('input', e => {
   }
 });
 
+// Recompute a day's ranges from its Start/End rows and refresh the readout in
+// place (no full re-render, so in-progress/blank rows and focus are preserved).
+function commitDayRanges(dayEl) {
+  const days = activeDays();
+  const idx = Array.from(dayEl.parentElement.children).indexOf(dayEl);
+  if (!days[idx]) return;
+  days[idx].ranges = readRangesFromDom(dayEl);
+  const readout = dayEl.querySelector('.grid-readout');
+  if (readout) readout.outerHTML = gridReadoutHtml(days[idx]);
+  scheduleSave();
+}
+
+document.getElementById('days').addEventListener('change', e => {
+  if (e.target.closest('.range-start, .range-end')) {
+    const dayEl = e.target.closest('.day');
+    if (dayEl) commitDayRanges(dayEl);
+  }
+});
+
 document.getElementById('days').addEventListener('click', e => {
   const copyBtn = e.target.closest('.copy-next-btn');
   if (copyBtn) {
@@ -1988,25 +2044,27 @@ document.getElementById('days').addEventListener('click', e => {
     if (from < 0 || from > 5) return;
     syncFromInputs();
     const days = activeDays();
-    days[from + 1] = { ...days[from], blocks: [...dayBlocks(days[from])] };
+    days[from + 1] = { ...days[from], ranges: dayRanges(days[from]).map(r => ({ ...r })) };
     render();
     scheduleSave();
     showToast(t('copiedToNext'));
     return;
   }
-  const blk = e.target.closest('.tblock');
-  if (blk) {
-    const dayEl = blk.closest('.day');
-    const idx = Array.from(dayEl.parentElement.children).indexOf(dayEl);
-    const days = activeDays();
-    if (days[idx]) {
-      const sl = blk.closest('.time-grid').scrollLeft;
-      toggleBlock(days[idx], +blk.dataset.block);
-      render();
-      const g = document.querySelector('.day.editing .time-grid');
-      if (g) g.scrollLeft = sl;
-      scheduleSave();
-    }
+  const addBtn = e.target.closest('.range-add');
+  if (addBtn) {
+    const container = addBtn.closest('.field').querySelector('.ranges');
+    container.insertAdjacentHTML('beforeend', rangeRowHtml(null));
+    const sel = container.querySelector('.range-row:last-child .range-start');
+    if (sel) sel.focus();
+    return;
+  }
+  const rmBtn = e.target.closest('.range-remove');
+  if (rmBtn) {
+    const dayEl = rmBtn.closest('.day');
+    const container = rmBtn.closest('.ranges');
+    rmBtn.closest('.range-row').remove();
+    if (!container.querySelector('.range-row')) container.insertAdjacentHTML('beforeend', rangeRowHtml(null));
+    commitDayRanges(dayEl);
     return;
   }
   const offBtn = e.target.closest('.dayoff-btn');
@@ -2014,12 +2072,8 @@ document.getElementById('days').addEventListener('click', e => {
     const dayEl = offBtn.closest('.day');
     const idx = Array.from(dayEl.parentElement.children).indexOf(dayEl);
     const days = activeDays();
-    const g0 = dayEl.querySelector('.time-grid');
-    const sl = g0 ? g0.scrollLeft : 0;
-    if (days[idx]) { days[idx].blocks = []; }
+    if (days[idx]) { days[idx].ranges = []; }
     render();
-    const g = document.querySelector('.day.editing .time-grid');
-    if (g) g.scrollLeft = sl;
     scheduleSave();
     return;
   }
@@ -2047,13 +2101,12 @@ document.getElementById('days').addEventListener('click', e => {
   }
   editingDayIndex = idx;
   render();
-  scrollGridToSelection();
 });
 
 document.getElementById('newWeekBtn').addEventListener('click', () => {
   syncFromInputs();
   const hasContent = state.schedules.some(sched => sched.days.some(d =>
-    dayBlocks(d).length));
+    dayRanges(d).length));
   if (hasContent && !confirm(t('confirmNewWeek'))) return;
   state = {
     weekStart: addDays(state.weekStart, 7),
@@ -2182,7 +2235,7 @@ function setAuthUserFromProfile(email, prof) {
 }
 function scheduleHasContent(s) {
   return s.days && s.days.some(d =>
-    dayBlocks(d).length || (d.actualHours !== '' && d.actualHours != null));
+    dayRanges(d).length || (d.actualHours !== '' && d.actualHours != null));
 }
 
 // Cloud sync status surfaced in the saved indicator, plus a dirty-set of
