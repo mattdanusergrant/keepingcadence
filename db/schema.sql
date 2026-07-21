@@ -120,6 +120,14 @@ create table team_invites (
 );
 create index idx_invites_email on team_invites(email) where status = 'pending';
 
+-- One free-text handbook per team (household standing info: rules, meals, care).
+-- data is {"sections":[{title, body}, ...]} the owner edits; members read it.
+create table handbooks (
+  team_id     uuid primary key references teams(id) on delete cascade,
+  data        jsonb not null default '{"sections":[]}'::jsonb,
+  updated_at  timestamptz not null default now()
+);
+
 -- ===========================================================================
 -- current_uid() — the one place identity is read, in the invoker context.
 -- ===========================================================================
@@ -161,6 +169,7 @@ alter table team_members  enable row level security;
 alter table schedules     enable row level security;
 alter table weeks         enable row level security;
 alter table team_invites  enable row level security;
+alter table handbooks     enable row level security;
 
 create policy profiles_select on profiles for select to authenticated
   using ( user_id = current_uid() );
@@ -182,6 +191,10 @@ create policy invites_select on team_invites for select to authenticated
   using ( team_id in (select kc_private.owned_team_ids(current_uid()))
           or ( status = 'pending'
                and email = (select email from profiles where user_id = current_uid()) ) );
+
+-- A team's handbook is visible to any of its members (same reach as its teams row).
+create policy handbooks_select on handbooks for select to authenticated
+  using ( team_id in (select kc_private.my_team_ids(current_uid())) );
 
 -- ===========================================================================
 -- Payload validation (defense-in-depth). The client already normalises days /
@@ -584,6 +597,47 @@ create or replace function save_actuals(p_schedule_id uuid, p_week_start date, p
 returns timestamptz language plpgsql security invoker set search_path = public as $$
 begin return kc_private._save_actuals(current_uid(), p_schedule_id, p_week_start, p_actuals, p_known_updated_at); end $$;
 
+-- Handbook: defense-in-depth on the blob (the Data API lets any authed caller POST it).
+create or replace function kc_private._require_handbook(p_data jsonb)
+returns void language plpgsql immutable set search_path = public as $$
+begin
+  if jsonb_typeof(p_data) <> 'object' or jsonb_typeof(p_data -> 'sections') <> 'array' then
+    raise exception 'handbook must be an object with a sections array' using errcode = 'PT422';
+  end if;
+  if jsonb_array_length(p_data -> 'sections') > 100 then
+    raise exception 'too many sections' using errcode = 'PT422';
+  end if;
+  if pg_column_size(p_data) > 262144 then
+    raise exception 'handbook too large' using errcode = 'PT413';
+  end if;
+end $$;
+
+-- Owner writes the team's handbook; optimistic concurrency mirrors _save_plan.
+create or replace function kc_private._save_handbook(p_uid text, p_team_id uuid, p_data jsonb,
+                                                     p_known_updated_at timestamptz default null)
+returns timestamptz language plpgsql security definer set search_path = public as $$
+  declare cur_upd timestamptz; new_upd timestamptz;
+begin
+  perform kc_private._require_handbook(p_data);
+  if not exists (select 1 from teams where id = p_team_id and owner_id = p_uid) then
+    raise exception 'not your team';
+  end if;
+  select updated_at into cur_upd from handbooks where team_id = p_team_id;
+  if p_known_updated_at is not null and cur_upd is not null and cur_upd > p_known_updated_at then
+    raise exception 'stale write' using errcode = 'PT409';
+  end if;
+  insert into handbooks (team_id, data, updated_at)
+    values (p_team_id, p_data, clock_timestamp())
+    on conflict (team_id) do update set data = excluded.data, updated_at = clock_timestamp()
+    returning updated_at into new_upd;
+  return new_upd;
+end $$;
+
+create or replace function save_handbook(p_team_id uuid, p_data jsonb,
+                                         p_known_updated_at timestamptz default null)
+returns timestamptz language plpgsql security invoker set search_path = public as $$
+begin return kc_private._save_handbook(current_uid(), p_team_id, p_data, p_known_updated_at); end $$;
+
 create or replace function delete_schedule(p_schedule_id uuid)
 returns void language plpgsql security invoker set search_path = public as $$
 begin perform kc_private._delete_schedule(current_uid(), p_schedule_id); end $$;
@@ -616,7 +670,7 @@ begin return kc_private._join_by_token(current_uid(), p_token); end $$;
 -- ===========================================================================
 grant usage on schema public to authenticated;
 grant usage on schema kc_private to authenticated;
-grant select on profiles, team_members, schedules, weeks, team_invites to authenticated;
+grant select on profiles, team_members, schedules, weeks, team_invites, handbooks to authenticated;
 -- teams: every column except join_token (the invite secret; owners fetch it via RPC)
 grant select (id, owner_id, name, plan, created_at) on teams to authenticated;
 grant execute on all functions in schema public to authenticated;
