@@ -703,6 +703,29 @@
       page-break-inside: avoid;
     }
   }
+
+  /* Handbook (household standing info) */
+  #handbookView { display: none; }
+  body.handbook-mode #handbookView { display: block; }
+  body.handbook-mode .toolbar,
+  body.handbook-mode .schedule-tabs,
+  body.handbook-mode #roleHint,
+  body.handbook-mode #weekSummary,
+  body.handbook-mode #days,
+  body.handbook-mode #shareBtn { display: none; }
+  .handbook { max-width: 720px; margin: 0.4rem auto 0; }
+  .hb-sec { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 0.7rem 0.9rem; margin-bottom: 0.6rem; box-shadow: var(--shadow); }
+  .hb-sec h3 { margin: 0 0 0.35rem; font-size: 1.02rem; }
+  .hb-body { font-size: 0.95rem; line-height: 1.5; }
+  .hb-title-in { width: 100%; font: inherit; font-weight: 700; margin-bottom: 0.4rem;
+    padding: 0.4rem 0.5rem; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg); color: inherit; box-sizing: border-box; }
+  .hb-body-in { width: 100%; font: inherit; padding: 0.4rem 0.5rem; border: 1px solid var(--border);
+    border-radius: 6px; background: var(--bg); color: inherit; box-sizing: border-box; resize: vertical; }
+  .hb-remove { margin-top: 0.4rem; }
+  .hb-add, #hbEditBtn { margin: 0.2rem 0 0.6rem; }
+  .hb-note, .hb-empty { color: var(--muted); font-size: 0.9rem; margin: 0.2rem 0 0.6rem; }
 </style>
 </head>
 <body class="view-mode lang-en">
@@ -718,6 +741,7 @@
         <button id="teamBtn" type="button" hidden>Team</button>
         <button id="accountBtn" type="button" hidden data-i18n="signIn">Sign in</button>
         <button id="shareBtn" data-i18n="share">Share</button>
+        <button id="viewToggleBtn" type="button" data-i18n="hbNav">Handbook</button>
         <button id="modeToggleBtn" type="button" data-i18n-aria-label="darkModeToggle" aria-label="Toggle dark mode">☾</button>
       </div>
     </div>
@@ -740,6 +764,7 @@
   <div class="role-hint" id="roleHint" hidden></div>
   <div class="week-summary" id="weekSummary" hidden></div>
   <div class="days" id="days"></div>
+  <section class="handbook" id="handbookView"></section>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -953,6 +978,7 @@ function updateModeToggle(isDark) {
 
 const T = {
   en: {
+    hbNav: 'Handbook', schedNav: 'Schedule', hbEdit: 'Edit', hbDone: 'Done', hbAddSection: '+ add section', hbSectionTitle: 'Section title', hbSectionBody: 'Details', hbRemove: 'Remove', hbEmpty: 'No sections yet.', hbViewOnly: 'View only — the team owner edits this.',
     title: 'Keeping Cadence',
     accountTitle: 'Account',
     email: 'Email',
@@ -1001,6 +1027,7 @@ const T = {
     helpSettingsBody: "The button in the top-right corner toggles between light and dark.",
     close: 'Close',
     saving: 'Saving…',
+    savedLocally: 'Saved on this device',
     saved: 'Saved',
     synced: 'Synced',
     syncOffline: 'Offline — saved on this device',
@@ -1059,6 +1086,7 @@ const T = {
     inviteWelcomeTeam: "You've been invited to join a team — sign up or sign in to accept."
   },
   es: {
+    hbNav: 'Manual', schedNav: 'Horario', hbEdit: 'Editar', hbDone: 'Listo', hbAddSection: '+ agregar sección', hbSectionTitle: 'Título', hbSectionBody: 'Detalles', hbRemove: 'Quitar', hbEmpty: 'Aún no hay secciones.', hbViewOnly: 'Solo lectura — el dueño del equipo lo edita.',
     title: 'Keeping Cadence',
     accountTitle: 'Cuenta',
     email: 'Correo',
@@ -1107,6 +1135,7 @@ const T = {
     helpSettingsBody: "El botón en la esquina superior derecha alterna entre claro y oscuro.",
     close: 'Cerrar',
     saving: 'Guardando…',
+    savedLocally: 'Guardado en este dispositivo',
     saved: 'Guardado',
     synced: 'Sincronizado',
     syncOffline: 'Sin conexión — guardado en este dispositivo',
@@ -1961,6 +1990,7 @@ function setLang(newLang) {
   applyStaticTranslations();
   render();
   if (CLOUD.enabled) reflectAuth();  // re-label account + team buttons (dynamic text)
+  if (handbookView) { const _vt = document.getElementById('viewToggleBtn'); if (_vt) _vt.textContent = t('schedNav'); renderHandbook(); }
 }
 
 // --- Event wiring ---
@@ -2169,6 +2199,132 @@ document.getElementById('modeToggleBtn').addEventListener('click', () => {
   saveSettings(settings);
   applyTheme();
 });
+
+// ---- Handbook (household standing info; per-team synced) -------------------
+const HANDBOOK_KEY = 'keepingcadence-handbook';
+let handbook = null;         // { sections: [{title, body}] }
+let handbookToken = null;    // optimistic-concurrency updated_at from server
+let handbookDirty = false;
+let handbookTimer = null;
+let handbookView = false;
+let handbookEditing = false;
+
+function seededHandbook() {
+  return { sections: [
+    { title: 'House Rules', body: '1) Fragrance-free household — we have eczema. Only unscented products; no scented sprays, candles, plug-ins, perfume, or scented detergent/lotion.\n2) Coming inside (arrival or back from outside), everyone: shoes off, wash hands.\n3) Before going outside, everyone: try the bathroom, wash hands, shoes on, sunscreen.\n4) Kids first, always.\n5) Respect the quiet times.\n6) Follow the labels.\n7) Keep the group chat current.\n8) Safety: stairs gate when kids are upstairs; doors locked.\n9) Phones down while watching the kids.' },
+    { title: 'Quiet Times', body: '8:00–9:00am — kids may still be sleeping.\n12:00–3:00pm — toddler nap.\nEnter as quietly as possible; only quiet tasks until the children are awake.' },
+    { title: 'Meals', body: 'Daily limits: 1 pouch per day; 1 cheese per day.\nVariety: less cheese, more peanut butter, more variety overall.\nLeftovers: don’t save so many; never Tupperware for little bits; anything saved goes in the fridge.\nAfter breakfast, every day (mandatory): brush each child’s teeth and wash their face.' },
+    { title: 'Cats', body: 'Black cat — indoor/outdoor; may have fresh wet food whenever he wishes; his leftovers can go outside for the grey cat.\nGrey cat — outdoor only; eats the leftovers.\nFeeding outside leaves dishes out there — bring empties inside to the sink to soak or wash.' },
+    { title: 'Laundry', body: 'Clothes (every load, no exceptions): Washer always Delicates; Dryer always TIME DRY / 60 min / MEDIUM heat (medium-high ruins our clothes); ALL dresses hang dry.\nTowels & bedding: hot wash / normal; normal-high dryer heat.\nWash order: Kids → Towels & Bedding → Mom → Dad.' },
+    { title: 'Dishes', body: 'We use the dishwasher for nearly everything — hand-wash only large items that don’t fit.\nCheck the Clean/Dirty magnet before loading or unloading; flip it when you start a wash or empty it.\nCat dishes: bring empties in, soak, wash, keep separate from the family’s dishes.' },
+    { title: 'Labels', body: 'Every spot in the kitchen and closets gets an English + Spanish label. Labeling is a work in progress — help getting it set up properly is very appreciated!' }
+  ] };
+}
+function loadHandbookLocal() { try { const r = localStorage.getItem(HANDBOOK_KEY); if (r) { const d = JSON.parse(r); if (d && Array.isArray(d.sections)) return d; } } catch (e) {} return null; }
+function saveHandbookLocal() { try { localStorage.setItem(HANDBOOK_KEY, JSON.stringify(handbook)); } catch (e) {} }
+function handbookEditable() { return !CLOUD.enabled || !authUser || !activeTeamId || iOwnActiveTeam(); }
+
+async function handbookPull() {
+  if (!CLOUD.enabled || !authUser || !activeTeamId) return;
+  try {
+    const rows = await dapi('/handbooks?select=data,updated_at&team_id=eq.' + encodeURIComponent(activeTeamId));
+    if (Array.isArray(rows) && rows.length) {
+      if (!handbookDirty) {
+        const d = rows[0].data;
+        handbook = (d && Array.isArray(d.sections)) ? d : { sections: [] };
+        handbookToken = rows[0].updated_at;
+      }
+    } else if (iOwnActiveTeam()) {
+      if (!handbook || !handbook.sections.length) handbook = seededHandbook();
+      handbookToken = null;
+      handbookPush();
+    } else {
+      handbook = { sections: [] };
+      handbookToken = null;
+    }
+  } catch (e) {}
+  if (handbookView) renderHandbook();
+}
+
+async function handbookPush() {
+  if (!CLOUD.enabled || !authUser || !activeTeamId || !iOwnActiveTeam()) { saveHandbookLocal(); return; }
+  try {
+    const up = await rpc('save_handbook', { p_team_id: activeTeamId, p_data: handbook, p_known_updated_at: handbookToken });
+    if (typeof up === 'string' && up) handbookToken = up;
+    handbookDirty = false;
+    renderSavedIndicator();
+  } catch (e) {
+    handbookDirty = true;  // stale/offline: keep local, retry on next edit
+    renderSavedIndicator(t('savedLocally') || '');
+  }
+}
+
+function handbookChanged() {
+  handbookDirty = true;
+  saveHandbookLocal();
+  renderSavedIndicator(t('saving'));
+  if (handbookTimer) clearTimeout(handbookTimer);
+  handbookTimer = setTimeout(function () { handbookPush(); }, 500);
+}
+
+function renderHandbook() {
+  const host = document.getElementById('handbookView');
+  if (!host) return;
+  const editable = handbookEditable();
+  const editing = editable && handbookEditing;
+  const secs = (handbook && handbook.sections) || [];
+  let html = '';
+  if (editable) html += '<button type="button" id="hbEditBtn" class="primary">' + escapeHtml(editing ? t('hbDone') : t('hbEdit')) + '</button>';
+  else html += '<p class="hb-note">' + escapeHtml(t('hbViewOnly')) + '</p>';
+  if (!secs.length && !editing) html += '<p class="hb-empty">' + escapeHtml(t('hbEmpty')) + '</p>';
+  secs.forEach(function (sec, i) {
+    if (editing) {
+      html += '<div class="hb-sec editing">'
+        + '<input class="hb-title-in" data-i="' + i + '" value="' + escapeHtml(sec.title || '') + '" placeholder="' + escapeHtml(t('hbSectionTitle')) + '">'
+        + '<textarea class="hb-body-in" data-i="' + i + '" rows="5" placeholder="' + escapeHtml(t('hbSectionBody')) + '">' + escapeHtml(sec.body || '') + '</textarea>'
+        + '<button type="button" class="hb-remove" data-i="' + i + '">' + escapeHtml(t('hbRemove')) + '</button>'
+        + '</div>';
+    } else {
+      html += '<div class="hb-sec"><h3>' + escapeHtml(sec.title || '') + '</h3><div class="hb-body">' + escapeHtml(sec.body || '').replace(/\n/g, '<br>') + '</div></div>';
+    }
+  });
+  if (editing) html += '<button type="button" class="hb-add">' + escapeHtml(t('hbAddSection')) + '</button>';
+  host.innerHTML = html;
+}
+
+function setHandbookView(on) {
+  handbookView = on;
+  document.body.classList.toggle('handbook-mode', on);
+  const btn = document.getElementById('viewToggleBtn');
+  if (btn) btn.textContent = on ? t('schedNav') : t('hbNav');
+  if (on) {
+    if (!handbook) handbook = loadHandbookLocal() || seededHandbook();
+    handbookEditing = false;
+    renderHandbook();
+    handbookPull();
+  } else {
+    render();
+  }
+}
+
+(function () {
+  const vt = document.getElementById('viewToggleBtn');
+  if (vt) vt.addEventListener('click', function () { setHandbookView(!handbookView); });
+  const host = document.getElementById('handbookView');
+  if (!host) return;
+  host.addEventListener('input', function (e) {
+    const ti = e.target.closest('.hb-title-in');
+    const bo = e.target.closest('.hb-body-in');
+    if (ti) { handbook.sections[+ti.dataset.i].title = ti.value; handbookChanged(); }
+    else if (bo) { handbook.sections[+bo.dataset.i].body = bo.value; handbookChanged(); }
+  });
+  host.addEventListener('click', function (e) {
+    if (e.target.id === 'hbEditBtn') { handbookEditing = !handbookEditing; renderHandbook(); return; }
+    if (e.target.classList.contains('hb-add')) { handbook.sections.push({ title: '', body: '' }); handbookChanged(); renderHandbook(); return; }
+    const rm = e.target.closest('.hb-remove');
+    if (rm) { handbook.sections.splice(+rm.dataset.i, 1); handbookChanged(); renderHandbook(); }
+  });
+})();
 
 // --- Init ---
 
@@ -2411,6 +2567,7 @@ async function cloudPull() {
   // A clean pull (nothing left unsynced) means the on-screen data matches the
   // server; reflect that instead of a stale "saved locally" timestamp.
   if (!dirtyIds.size && syncStatus !== 'saving') setSyncStatus('synced');
+  try { await handbookPull(); } catch (e) {}
   render();
   return list.length;
 }
