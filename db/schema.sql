@@ -128,6 +128,21 @@ create table handbooks (
   updated_at  timestamptz not null default now()
 );
 
+-- Handbook daily checks: any TEAM MEMBER (not just the owner) may check items
+-- off; one row per team, keyed to a calendar day; same-day writes union-merge
+-- per item key so concurrent checkers never clobber each other.
+create table if not exists handbook_checks (
+  team_id     uuid primary key references teams(id) on delete cascade,
+  day         date not null,
+  data        jsonb not null default '{}'::jsonb,
+  updated_at  timestamptz not null default now()
+);
+alter table handbook_checks enable row level security;
+drop policy if exists handbook_checks_select on handbook_checks;
+create policy handbook_checks_select on handbook_checks for select to authenticated
+  using ( team_id in (select kc_private.my_team_ids(current_uid())) );
+
+
 -- ===========================================================================
 -- current_uid() — the one place identity is read, in the invoker context.
 -- ===========================================================================
@@ -638,6 +653,55 @@ create or replace function save_handbook(p_team_id uuid, p_data jsonb,
 returns timestamptz language plpgsql security invoker set search_path = public as $$
 begin return kc_private._save_handbook(current_uid(), p_team_id, p_data, p_known_updated_at); end $$;
 
+create or replace function kc_private._require_handbook_checks(p_data jsonb)
+returns void language plpgsql as $$
+begin
+  if p_data is null or jsonb_typeof(p_data) <> 'object' then
+    raise exception 'checks must be an object';
+  end if;
+  if (select count(*) from jsonb_object_keys(p_data)) > 500 then
+    raise exception 'too many check items';
+  end if;
+  if exists (select 1 from jsonb_each(p_data) where jsonb_typeof(value) <> 'boolean') then
+    raise exception 'check values must be booleans';
+  end if;
+  if pg_column_size(p_data) > 65536 then
+    raise exception 'checks too large';
+  end if;
+end $$;
+
+create or replace function kc_private._save_handbook_checks(p_uid text, p_team_id uuid,
+                                                            p_day date, p_data jsonb)
+returns timestamptz language plpgsql security definer set search_path = public as $$
+  declare new_upd timestamptz;
+begin
+  perform kc_private._require_handbook_checks(p_data);
+  if p_day is null then raise exception 'day required'; end if;
+  if not exists (select 1 from kc_private.my_team_ids(p_uid) m(tid) where m.tid = p_team_id) then
+    raise exception 'not your team';
+  end if;
+  insert into handbook_checks (team_id, day, data, updated_at)
+    values (p_team_id, p_day, p_data, clock_timestamp())
+    on conflict (team_id) do update
+      set day  = excluded.day,
+          data = case when handbook_checks.day = excluded.day
+                      then handbook_checks.data || excluded.data
+                      else excluded.data end,
+          updated_at = clock_timestamp()
+    returning updated_at into new_upd;
+  return new_upd;
+end $$;
+
+create or replace function save_handbook_checks(p_team_id uuid, p_day date, p_data jsonb)
+returns timestamptz language plpgsql security invoker set search_path = public as $$
+begin return kc_private._save_handbook_checks(current_uid(), p_team_id, p_day, p_data); end $$;
+
+grant select on handbook_checks to authenticated;
+grant execute on function save_handbook_checks(uuid, date, jsonb) to authenticated;
+grant execute on function kc_private._save_handbook_checks(text, uuid, date, jsonb) to authenticated;
+grant execute on function kc_private._require_handbook_checks(jsonb) to authenticated;
+
+
 create or replace function delete_schedule(p_schedule_id uuid)
 returns void language plpgsql security invoker set search_path = public as $$
 begin perform kc_private._delete_schedule(current_uid(), p_schedule_id); end $$;
@@ -670,7 +734,7 @@ begin return kc_private._join_by_token(current_uid(), p_token); end $$;
 -- ===========================================================================
 grant usage on schema public to authenticated;
 grant usage on schema kc_private to authenticated;
-grant select on profiles, team_members, schedules, weeks, team_invites, handbooks to authenticated;
+grant select on profiles, team_members, schedules, weeks, team_invites, handbooks, handbook_checks to authenticated;
 -- teams: every column except join_token (the invite secret; owners fetch it via RPC)
 grant select (id, owner_id, name, plan, created_at) on teams to authenticated;
 grant execute on all functions in schema public to authenticated;
