@@ -750,6 +750,45 @@
     mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Crect x='0' y='5' width='2.7' height='7' rx='1.35'/%3E%3Crect x='4.65' y='0' width='2.7' height='12' rx='1.35'/%3E%3Crect x='9.3' y='3' width='2.7' height='9' rx='1.35'/%3E%3C/svg%3E") no-repeat center / contain;
   }
   .hb-body { font-size: 0.95rem; line-height: 1.55; color: var(--ink); }
+  .hb-progress {
+    display: flex; align-items: center; justify-content: space-between; gap: 0.6rem;
+    margin: 0.2rem 2px 0.7rem; font-size: 0.85rem; color: var(--muted);
+  }
+  .hb-prog {
+    font-weight: 650; color: var(--accent); font-variant-numeric: tabular-nums;
+    background: var(--accent-soft); border-radius: var(--r-pill); padding: 0.2rem 0.7rem;
+    white-space: nowrap;
+  }
+  .hb-prog.done { color: var(--on-gold); background: var(--gold-soft); }
+  .hb-list { display: flex; flex-direction: column; }
+  .hb-item {
+    display: flex; align-items: flex-start; gap: 0.6rem; width: 100%;
+    text-align: left; background: none; border: 0; padding: 0.42rem 0.15rem;
+    font: inherit; color: var(--ink); cursor: pointer; border-radius: 8px;
+  }
+  .hb-item:hover { background: var(--surface-2); }
+  .hb-tick {
+    flex: none; width: 20px; height: 20px; margin-top: 1px; position: relative;
+    border: 2px solid var(--line-strong); border-radius: 50%;
+    transition: background .15s var(--ease), border-color .15s var(--ease);
+  }
+  .hb-item.on .hb-tick { background: var(--accent); border-color: var(--accent); }
+  .hb-item.on .hb-tick::after {
+    content: ''; position: absolute; left: 5px; top: 2px; width: 5px; height: 9px;
+    border: solid var(--on-accent); border-width: 0 2px 2px 0; transform: rotate(45deg);
+  }
+  .hb-item-txt { font-size: 0.93rem; line-height: 1.45; }
+  .hb-item.on .hb-item-txt {
+    color: var(--muted);
+    text-decoration: line-through;
+    text-decoration-color: color-mix(in srgb, var(--muted) 55%, transparent);
+  }
+  .hb-count {
+    margin-left: auto; font-size: 0.72rem; font-weight: 650; color: var(--muted);
+    background: var(--surface-2); border-radius: var(--r-pill); padding: 0.15rem 0.55rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .hb-count.done { color: var(--on-gold); background: var(--gold-soft); }
   .hb-title-in { width: 100%; font: inherit; font-weight: 700; margin-bottom: 0.4rem;
     padding: 0.45rem 0.55rem; border: 1px solid var(--border); border-radius: var(--r-sm);
     background: var(--surface-2); color: inherit; box-sizing: border-box; }
@@ -1304,6 +1343,7 @@ function updateModeToggle(isDark) {
 const T = {
   en: {
     appearance: 'Appearance', modeLbl: 'Mode', modeAuto: 'Auto', modeLight: 'Light', modeDark: 'Dark', themeLbl: 'Theme', themeCadence: 'Cadence', themeSunrise: 'Sunrise', themeMeadow: 'Meadow', themeTide: 'Tide', themeBloom: 'Bloom',
+    hbToday: 'Today', hbAllDone: 'All done for today!', hbEditHint: 'One item per line — each line becomes something to check off.',
     hbNav: 'Handbook', schedNav: 'Schedule', hbEdit: 'Edit', hbDone: 'Done', hbAddSection: '+ add section', hbSectionTitle: 'Section title', hbSectionBody: 'Details', hbRemove: 'Remove', hbEmpty: 'No sections yet.', hbViewOnly: 'View only — the team owner edits this.',
     title: 'Keeping Cadence',
     accountTitle: 'Account',
@@ -1413,6 +1453,7 @@ const T = {
   },
   es: {
     appearance: 'Apariencia', modeLbl: 'Modo', modeAuto: 'Auto', modeLight: 'Claro', modeDark: 'Oscuro', themeLbl: 'Tema', themeCadence: 'Cadencia', themeSunrise: 'Amanecer', themeMeadow: 'Pradera', themeTide: 'Marea', themeBloom: 'Flor',
+    hbToday: 'Hoy', hbAllDone: '¡Todo listo por hoy!', hbEditHint: 'Un elemento por línea — cada línea se puede marcar como hecha.',
     hbNav: 'Manual', schedNav: 'Horario', hbEdit: 'Editar', hbDone: 'Listo', hbAddSection: '+ agregar sección', hbSectionTitle: 'Título', hbSectionBody: 'Detalles', hbRemove: 'Quitar', hbEmpty: 'Aún no hay secciones.', hbViewOnly: 'Solo lectura — el dueño del equipo lo edita.',
     title: 'Keeping Cadence',
     accountTitle: 'Cuenta',
@@ -2564,6 +2605,65 @@ let handbookTimer = null;
 let handbookView = false;
 let handbookEditing = false;
 
+// Daily checklist state: every handbook line is a checkable item; checks
+// reset each calendar day and sync per-team (ANY member may check).
+const HB_CHECKS_KEY = 'keepingcadence-handbook-checks';
+let hbChecks = null;         // { day: 'YYYY-MM-DD', items: { key: bool } }
+let hbChecksDirty = false;
+let hbChecksTimer = null;
+let hbPollTimer = null;
+
+function todayIso() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function hbKey(title, line) {
+  const str = (title || '') + '|' + line;
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
+function ensureHbChecks() {
+  if (!hbChecks) {
+    try {
+      const raw = localStorage.getItem(HB_CHECKS_KEY);
+      if (raw) { const p = JSON.parse(raw); if (p && p.day && p.items) hbChecks = p; }
+    } catch (e) {}
+  }
+  if (!hbChecks || hbChecks.day !== todayIso()) hbChecks = { day: todayIso(), items: {} };
+  return hbChecks;
+}
+function saveHbChecksLocal() { try { localStorage.setItem(HB_CHECKS_KEY, JSON.stringify(hbChecks)); } catch (e) {} }
+function hbChecksChanged() {
+  hbChecksDirty = true;
+  saveHbChecksLocal();
+  if (hbChecksTimer) clearTimeout(hbChecksTimer);
+  hbChecksTimer = setTimeout(function () { hbChecksPush(); }, 400);
+}
+async function hbChecksPush() {
+  if (!CLOUD.enabled || !authUser || !activeTeamId) { hbChecksDirty = false; return; }
+  try {
+    await rpc('save_handbook_checks', { p_team_id: activeTeamId, p_day: hbChecks.day, p_data: hbChecks.items });
+    hbChecksDirty = false;
+  } catch (e) { /* offline/stale: kept locally, retried on next change or pull */ }
+}
+async function hbChecksPull() {
+  if (!CLOUD.enabled || !authUser || !activeTeamId) return;
+  try {
+    const rows = await dapi('/handbook_checks?select=day,data&team_id=eq.' + encodeURIComponent(activeTeamId));
+    ensureHbChecks();
+    if (Array.isArray(rows) && rows.length && rows[0].day === hbChecks.day) {
+      // server first, then any local not-yet-pushed toggles win (they push next)
+      hbChecks.items = hbChecksDirty
+        ? Object.assign({}, rows[0].data || {}, hbChecks.items)
+        : (rows[0].data || {});
+      saveHbChecksLocal();
+    } else if (hbChecksDirty) {
+      hbChecksPush();
+    }
+  } catch (e) {}
+}
+
 function seededHandbook() {
   return { sections: [
     { title: 'House Rules', body: '1) Fragrance-free household — we have eczema. Only unscented products; no scented sprays, candles, plug-ins, perfume, or scented detergent/lotion.\n2) Coming inside (arrival or back from outside), everyone: shoes off, wash hands.\n3) Before going outside, everyone: try the bathroom, wash hands, shoes on, sunscreen.\n4) Kids first, always.\n5) Respect the quiet times.\n6) Follow the labels.\n7) Keep the group chat current.\n8) Safety: stairs gate when kids are upstairs; doors locked.\n9) Phones down while watching the kids.' },
@@ -2598,6 +2698,7 @@ async function handbookPull() {
       handbookToken = null;
     }
   } catch (e) {}
+  await hbChecksPull();
   if (handbookView) renderHandbook();
 }
 
@@ -2628,21 +2729,45 @@ function renderHandbook() {
   const editable = handbookEditable();
   const editing = editable && handbookEditing;
   const secs = (handbook && handbook.sections) || [];
+  const checks = ensureHbChecks().items;
   let html = '';
   if (editable) html += '<button type="button" id="hbEditBtn" class="primary">' + escapeHtml(editing ? t('hbDone') : t('hbEdit')) + '</button>';
   else html += '<p class="hb-note">' + escapeHtml(t('hbViewOnly')) + '</p>';
+  if (editing) html += '<p class="hb-note">' + escapeHtml(t('hbEditHint')) + '</p>';
   if (!secs.length && !editing) html += '<p class="hb-empty">' + escapeHtml(t('hbEmpty')) + '</p>';
+  let secsHtml = '', doneTotal = 0, itemTotal = 0;
   secs.forEach(function (sec, i) {
     if (editing) {
-      html += '<div class="hb-sec editing">'
+      secsHtml += '<div class="hb-sec editing">'
         + '<input class="hb-title-in" data-i="' + i + '" value="' + escapeHtml(sec.title || '') + '" placeholder="' + escapeHtml(t('hbSectionTitle')) + '">'
         + '<textarea class="hb-body-in" data-i="' + i + '" rows="5" placeholder="' + escapeHtml(t('hbSectionBody')) + '">' + escapeHtml(sec.body || '') + '</textarea>'
         + '<button type="button" class="hb-remove" data-i="' + i + '">' + escapeHtml(t('hbRemove')) + '</button>'
         + '</div>';
-    } else {
-      html += '<div class="hb-sec"><h3>' + escapeHtml(sec.title || '') + '</h3><div class="hb-body">' + escapeHtml(sec.body || '').replace(/\n/g, '<br>') + '</div></div>';
+      return;
     }
+    const lines = String(sec.body || '').split('\n').map(function (l) { return l.trim(); }).filter(Boolean);
+    let done = 0;
+    const rows = lines.map(function (line) {
+      const k = hbKey(sec.title, line);
+      const on = !!checks[k];
+      if (on) done++;
+      return '<button type="button" class="hb-item' + (on ? ' on' : '') + '" data-k="' + k + '" aria-pressed="' + on + '">'
+        + '<span class="hb-tick" aria-hidden="true"></span>'
+        + '<span class="hb-item-txt">' + escapeHtml(line) + '</span></button>';
+    }).join('');
+    doneTotal += done; itemTotal += lines.length;
+    secsHtml += '<div class="hb-sec"><h3>' + escapeHtml(sec.title || '')
+      + (lines.length ? '<span class="hb-count' + (done === lines.length ? ' done' : '') + '">' + done + '/' + lines.length + '</span>' : '')
+      + '</h3><div class="hb-list">' + rows + '</div></div>';
   });
+  if (!editing && itemTotal) {
+    const dateStr = new Date().toLocaleDateString(locale(), { weekday: 'short', month: 'short', day: 'numeric' });
+    const allDone = doneTotal === itemTotal;
+    html += '<div class="hb-progress"><span>' + escapeHtml(t('hbToday')) + ' · ' + escapeHtml(dateStr) + '</span>'
+      + '<span class="hb-prog' + (allDone ? ' done' : '') + '">'
+      + (allDone ? escapeHtml(t('hbAllDone')) : doneTotal + ' / ' + itemTotal) + '</span></div>';
+  }
+  html += secsHtml;
   if (editing) html += '<button type="button" class="hb-add">' + escapeHtml(t('hbAddSection')) + '</button>';
   host.innerHTML = html;
 }
@@ -2657,7 +2782,11 @@ function setHandbookView(on) {
     handbookEditing = false;
     renderHandbook();
     handbookPull();
+    if (!hbPollTimer) hbPollTimer = setInterval(function () {
+      if (document.visibilityState !== 'hidden' && !handbookEditing) hbChecksPull().then(function () { if (handbookView) renderHandbook(); });
+    }, 60000);
   } else {
+    if (hbPollTimer) { clearInterval(hbPollTimer); hbPollTimer = null; }
     render();
   }
 }
@@ -2677,7 +2806,14 @@ function setHandbookView(on) {
     if (e.target.id === 'hbEditBtn') { handbookEditing = !handbookEditing; renderHandbook(); return; }
     if (e.target.classList.contains('hb-add')) { handbook.sections.push({ title: '', body: '' }); handbookChanged(); renderHandbook(); return; }
     const rm = e.target.closest('.hb-remove');
-    if (rm) { handbook.sections.splice(+rm.dataset.i, 1); handbookChanged(); renderHandbook(); }
+    if (rm) { handbook.sections.splice(+rm.dataset.i, 1); handbookChanged(); renderHandbook(); return; }
+    const it = e.target.closest('.hb-item');
+    if (it && !handbookEditing) {
+      const c = ensureHbChecks();
+      c.items[it.dataset.k] = !c.items[it.dataset.k];
+      hbChecksChanged();
+      renderHandbook();
+    }
   });
 })();
 
