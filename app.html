@@ -794,7 +794,13 @@
     background: var(--surface-2); color: inherit; box-sizing: border-box; }
   .hb-body-in { width: 100%; font: inherit; padding: 0.45rem 0.55rem; border: 1px solid var(--border);
     border-radius: var(--r-sm); background: var(--surface-2); color: inherit; box-sizing: border-box; resize: vertical; }
-  .hb-remove { margin-top: 0.4rem; }
+  .hb-remove { margin-top: 0; }
+  .hb-sec-foot { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; margin-top: 0.45rem; }
+  .hb-check-toggle {
+    display: inline-flex; align-items: center; gap: 0.45rem;
+    font-size: 0.85rem; font-weight: 550; color: var(--ink); cursor: pointer;
+  }
+  .hb-check-toggle input { width: 17px; height: 17px; accent-color: var(--accent); cursor: pointer; }
   .hb-add, #hbEditBtn { margin: 0.2rem 0 0.6rem; }
   .hb-note, .hb-empty { color: var(--muted); font-size: 0.9rem; margin: 0.2rem 0 0.6rem; }
   #hbEditBtn, .hb-add, .hb-remove {
@@ -1343,7 +1349,7 @@ function updateModeToggle(isDark) {
 const T = {
   en: {
     appearance: 'Appearance', modeLbl: 'Mode', modeAuto: 'Auto', modeLight: 'Light', modeDark: 'Dark', themeLbl: 'Theme', themeCadence: 'Cadence', themeSunrise: 'Sunrise', themeMeadow: 'Meadow', themeTide: 'Tide', themeBloom: 'Bloom',
-    hbToday: 'Today', hbAllDone: 'All done for today!', hbEditHint: 'One item per line — each line becomes something to check off.',
+    hbToday: 'Today', hbAllDone: 'All done for today!', hbEditHint: 'One item per line. Sections marked Checklist become tappable daily to-dos; others stay reference text.', hbChecklistLbl: 'Checklist',
     hbNav: 'Handbook', schedNav: 'Schedule', hbEdit: 'Edit', hbDone: 'Done', hbAddSection: '+ add section', hbSectionTitle: 'Section title', hbSectionBody: 'Details', hbRemove: 'Remove', hbEmpty: 'No sections yet.', hbViewOnly: 'View only — the team owner edits this.',
     title: 'Keeping Cadence',
     accountTitle: 'Account',
@@ -1453,7 +1459,7 @@ const T = {
   },
   es: {
     appearance: 'Apariencia', modeLbl: 'Modo', modeAuto: 'Auto', modeLight: 'Claro', modeDark: 'Oscuro', themeLbl: 'Tema', themeCadence: 'Cadencia', themeSunrise: 'Amanecer', themeMeadow: 'Pradera', themeTide: 'Marea', themeBloom: 'Flor',
-    hbToday: 'Hoy', hbAllDone: '¡Todo listo por hoy!', hbEditHint: 'Un elemento por línea — cada línea se puede marcar como hecha.',
+    hbToday: 'Hoy', hbAllDone: '¡Todo listo por hoy!', hbEditHint: 'Un elemento por línea. Las secciones marcadas como Lista se pueden tachar cada día; las demás quedan como texto.', hbChecklistLbl: 'Lista de tareas',
     hbNav: 'Manual', schedNav: 'Horario', hbEdit: 'Editar', hbDone: 'Listo', hbAddSection: '+ agregar sección', hbSectionTitle: 'Título', hbSectionBody: 'Detalles', hbRemove: 'Quitar', hbEmpty: 'Aún no hay secciones.', hbViewOnly: 'Solo lectura — el dueño del equipo lo edita.',
     title: 'Keeping Cadence',
     accountTitle: 'Cuenta',
@@ -2666,8 +2672,8 @@ async function hbChecksPull() {
 
 function seededHandbook() {
   return { sections: [
-    { title: 'House Rules', body: '1) Fragrance-free household — we have eczema. Only unscented products; no scented sprays, candles, plug-ins, perfume, or scented detergent/lotion.\n2) Coming inside (arrival or back from outside), everyone: shoes off, wash hands.\n3) Before going outside, everyone: try the bathroom, wash hands, shoes on, sunscreen.\n4) Kids first, always.\n5) Respect the quiet times.\n6) Follow the labels.\n7) Keep the group chat current.\n8) Safety: stairs gate when kids are upstairs; doors locked.\n9) Phones down while watching the kids.' },
-    { title: 'Quiet Times', body: '8:00–9:00am — kids may still be sleeping.\n12:00–3:00pm — toddler nap.\nEnter as quietly as possible; only quiet tasks until the children are awake.' },
+    { title: 'House Rules', check: false, body: '1) Fragrance-free household — we have eczema. Only unscented products; no scented sprays, candles, plug-ins, perfume, or scented detergent/lotion.\n2) Coming inside (arrival or back from outside), everyone: shoes off, wash hands.\n3) Before going outside, everyone: try the bathroom, wash hands, shoes on, sunscreen.\n4) Kids first, always.\n5) Respect the quiet times.\n6) Follow the labels.\n7) Keep the group chat current.\n8) Safety: stairs gate when kids are upstairs; doors locked.\n9) Phones down while watching the kids.' },
+    { title: 'Quiet Times', check: false, body: '8:00–9:00am — kids may still be sleeping.\n12:00–3:00pm — toddler nap.\nEnter as quietly as possible; only quiet tasks until the children are awake.' },
     { title: 'Meals', body: 'Daily limits: 1 pouch per day; 1 cheese per day.\nVariety: less cheese, more peanut butter, more variety overall.\nLeftovers: don’t save so many; never Tupperware for little bits; anything saved goes in the fridge.\nAfter breakfast, every day (mandatory): brush each child’s teeth and wash their face.' },
     { title: 'Cats', body: 'Black cat — indoor/outdoor; may have fresh wet food whenever he wishes; his leftovers can go outside for the grey cat.\nGrey cat — outdoor only; eats the leftovers.\nFeeding outside leaves dishes out there — bring empties inside to the sink to soak or wash.' },
     { title: 'Laundry', body: 'Clothes (every load, no exceptions): Washer always Delicates; Dryer always TIME DRY / 60 min / MEDIUM heat (medium-high ruins our clothes); ALL dresses hang dry.\nTowels & bedding: hot wash / normal; normal-high dryer heat.\nWash order: Kids → Towels & Bedding → Mom → Dad.' },
@@ -2675,7 +2681,15 @@ function seededHandbook() {
     { title: 'Labels', body: 'Every spot in the kitchen and closets gets an English + Spanish label. Labeling is a work in progress — help getting it set up properly is very appreciated!' }
   ] };
 }
-function loadHandbookLocal() { try { const r = localStorage.getItem(HANDBOOK_KEY); if (r) { const d = JSON.parse(r); if (d && Array.isArray(d.sections)) return d; } } catch (e) {} return null; }
+function normalizeHandbookFlags(d) {
+  if (d && Array.isArray(d.sections)) {
+    d.sections.forEach(function (sec) {
+      if (sec && sec.check === undefined && (sec.title === 'House Rules' || sec.title === 'Quiet Times')) sec.check = false;
+    });
+  }
+  return d;
+}
+function loadHandbookLocal() { try { const r = localStorage.getItem(HANDBOOK_KEY); if (r) { const d = JSON.parse(r); if (d && Array.isArray(d.sections)) return normalizeHandbookFlags(d); } } catch (e) {} return null; }
 function saveHandbookLocal() { try { localStorage.setItem(HANDBOOK_KEY, JSON.stringify(handbook)); } catch (e) {} }
 function handbookEditable() { return !CLOUD.enabled || !authUser || !activeTeamId || iOwnActiveTeam(); }
 
@@ -2686,7 +2700,7 @@ async function handbookPull() {
     if (Array.isArray(rows) && rows.length) {
       if (!handbookDirty) {
         const d = rows[0].data;
-        handbook = (d && Array.isArray(d.sections)) ? d : { sections: [] };
+        handbook = (d && Array.isArray(d.sections)) ? normalizeHandbookFlags(d) : { sections: [] };
         handbookToken = rows[0].updated_at;
       }
     } else if (iOwnActiveTeam()) {
@@ -2741,8 +2755,16 @@ function renderHandbook() {
       secsHtml += '<div class="hb-sec editing">'
         + '<input class="hb-title-in" data-i="' + i + '" value="' + escapeHtml(sec.title || '') + '" placeholder="' + escapeHtml(t('hbSectionTitle')) + '">'
         + '<textarea class="hb-body-in" data-i="' + i + '" rows="5" placeholder="' + escapeHtml(t('hbSectionBody')) + '">' + escapeHtml(sec.body || '') + '</textarea>'
+        + '<div class="hb-sec-foot">'
+        + '<label class="hb-check-toggle"><input type="checkbox" class="hb-check-in" data-i="' + i + '"' + (sec.check === false ? '' : ' checked') + '> ' + escapeHtml(t('hbChecklistLbl')) + '</label>'
         + '<button type="button" class="hb-remove" data-i="' + i + '">' + escapeHtml(t('hbRemove')) + '</button>'
+        + '</div>'
         + '</div>';
+      return;
+    }
+    if (sec.check === false) {
+      secsHtml += '<div class="hb-sec"><h3>' + escapeHtml(sec.title || '') + '</h3>'
+        + '<div class="hb-body">' + escapeHtml(sec.body || '').replace(/\n/g, '<br>') + '</div></div>';
       return;
     }
     const lines = String(sec.body || '').split('\n').map(function (l) { return l.trim(); }).filter(Boolean);
@@ -2799,8 +2821,10 @@ function setHandbookView(on) {
   host.addEventListener('input', function (e) {
     const ti = e.target.closest('.hb-title-in');
     const bo = e.target.closest('.hb-body-in');
+    const ck = e.target.closest('.hb-check-in');
     if (ti) { handbook.sections[+ti.dataset.i].title = ti.value; handbookChanged(); }
     else if (bo) { handbook.sections[+bo.dataset.i].body = bo.value; handbookChanged(); }
+    else if (ck) { handbook.sections[+ck.dataset.i].check = ck.checked; handbookChanged(); }
   });
   host.addEventListener('click', function (e) {
     if (e.target.id === 'hbEditBtn') { handbookEditing = !handbookEditing; renderHandbook(); return; }
