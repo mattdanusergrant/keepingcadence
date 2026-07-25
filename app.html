@@ -816,6 +816,50 @@
   .hb-add:hover { border-style: solid; border-color: var(--accent); }
   .hb-remove:hover { border-color: var(--warning); color: var(--warning); }
 
+  /* ---------- time cards ---------- */
+  .timecard {
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--r-lg);
+    padding: 0.8rem 0.9rem; margin-bottom: 0.7rem; box-shadow: var(--shadow);
+  }
+  .timecard[hidden] { display: none; }
+  .tc-head { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; margin-bottom: 0.4rem; }
+  .tc-title { font-family: var(--font-display); font-weight: 700; font-size: 1rem; letter-spacing: -0.01em; }
+  .tc-pill {
+    font-size: 0.7rem; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase;
+    padding: 0.18rem 0.6rem; border-radius: var(--r-pill);
+    background: var(--accent-soft); color: var(--accent); white-space: nowrap;
+  }
+  .tc-pill.approved { background: var(--gold-soft); color: var(--on-gold); }
+  .tc-pill.changes { background: color-mix(in srgb, var(--warning) 16%, transparent); color: var(--warning); }
+  .tc-hours { display: flex; align-items: baseline; gap: 0.45rem; font-size: 0.9rem; color: var(--muted); }
+  .tc-hours b { color: var(--ink); font-family: var(--font-display); font-size: 1.05rem; font-variant-numeric: tabular-nums; }
+  .tc-hint, .tc-note { font-size: 0.85rem; color: var(--muted); margin: 0.35rem 0 0; }
+  .tc-note { font-style: italic; }
+  .tc-note-in {
+    width: 100%; font: inherit; font-size: 0.9rem; margin: 0.55rem 0 0.5rem;
+    padding: 0.45rem 0.55rem; background: var(--surface-2); color: var(--ink);
+    border: 1px solid var(--border); border-radius: var(--r-sm); box-sizing: border-box;
+  }
+  #tcSubmitBtn {
+    font: inherit; font-size: 0.9rem; font-weight: 650; cursor: pointer;
+    padding: 0.45rem 1rem; border-radius: var(--r-pill);
+    background: var(--accent); color: var(--on-accent); border: 1px solid var(--accent);
+  }
+  #tcSubmitBtn[disabled] { opacity: 0.6; cursor: default; }
+  .tc-list { display: flex; flex-direction: column; gap: 0.6rem; }
+  .tc-row { border: 1px solid var(--border); border-radius: var(--r-md); padding: 0.65rem 0.75rem; background: var(--surface-2); }
+  .tc-row-top { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.2rem; }
+  .tc-who { font-size: 0.82rem; color: var(--muted); margin-bottom: 0.25rem; word-break: break-word; }
+  .tc-acts { display: flex; gap: 0.4rem; justify-content: flex-end; margin-top: 0.5rem; }
+  .tc-acts button {
+    font: inherit; font-size: 0.85rem; font-weight: 600; cursor: pointer;
+    padding: 0.35rem 0.8rem; border-radius: var(--r-pill);
+    background: var(--card); color: var(--ink); border: 1px solid var(--border);
+  }
+  .tc-acts button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+  .tc-acts button[disabled] { opacity: 0.6; cursor: default; }
+  body.handbook-mode .timecard { display: none; }
+
   /* ---------- appearance sheet ---------- */
   .appearance-row {
     display: flex; align-items: center; justify-content: space-between;
@@ -992,6 +1036,7 @@
     <select id="teamSelect" class="team-select" hidden data-i18n-aria-label="team" aria-label="Team"></select>
     <button id="duplicateBtn" data-i18n="duplicate">Duplicate &rarr; next week</button>
     <button id="newWeekBtn" data-i18n="newWeek">New (blank) week</button>
+    <button id="timecardsBtn" type="button" hidden data-i18n="tcNav">Time cards</button>
     <div class="week-picker">
       <span data-i18n="weekOf">Week of</span>
       <input type="date" id="weekStart">
@@ -1003,6 +1048,7 @@
   <div class="schedule-tabs" id="scheduleTabs"></div>
   <div class="role-hint" id="roleHint" hidden></div>
   <div class="week-summary" id="weekSummary" hidden></div>
+  <div class="timecard" id="timecardBox" hidden></div>
   <div class="days" id="days"></div>
   <section class="handbook" id="handbookView"></section>
 </div>
@@ -1115,6 +1161,18 @@
       <h3 data-i18n="helpSettingsTitle">Dark mode</h3>
       <p data-i18n="helpSettingsBody"></p>
     </div>
+    <div class="modal-actions">
+      <button type="button" class="primary" data-modal-close data-i18n="close">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="timecardsModal" hidden>
+  <div class="modal-backdrop" data-modal-close></div>
+  <div class="modal-card" role="dialog" aria-labelledby="tcHeading">
+    <h2 id="tcHeading" data-i18n="tcTitle">Time cards</h2>
+    <p class="hb-note" id="tcWeekLabel"></p>
+    <div id="tcList" class="tc-list"></div>
     <div class="modal-actions">
       <button type="button" class="primary" data-modal-close data-i18n="close">Close</button>
     </div>
@@ -1349,6 +1407,12 @@ function updateModeToggle(isDark) {
 const T = {
   en: {
     appearance: 'Appearance', modeLbl: 'Mode', modeAuto: 'Auto', modeLight: 'Light', modeDark: 'Dark', themeLbl: 'Theme', themeCadence: 'Cadence', themeSunrise: 'Sunrise', themeMeadow: 'Meadow', themeTide: 'Tide', themeBloom: 'Bloom',
+tcTitle: 'Time cards', tcNav: 'Time cards', tcSubmit: 'Submit time card',
+    tcResubmit: 'Submit again', tcSubmitted: 'Submitted — waiting for review',
+    tcApproved: 'Approved', tcChanges: 'Changes requested', tcNotePh: 'Note for the owner (optional)',
+    tcHours: 'Logged', tcNone: 'No time cards submitted for this week yet.',
+    tcApprove: 'Approve', tcRequest: 'Request changes', tcSubmitHint: 'Log your hours for each day, then send the week to the team owner.',
+    tcSentOk: 'Time card submitted', tcReviewedOk: 'Time card updated', tcEditedSince: 'Edited after submitting — send it again.',
     hbToday: 'Today', hbAllDone: 'All done for today!', hbEditHint: 'One item per line. Sections marked Checklist become tappable daily to-dos; others stay reference text.', hbChecklistLbl: 'Checklist',
     hbNav: 'Handbook', schedNav: 'Schedule', hbEdit: 'Edit', hbDone: 'Done', hbAddSection: '+ add section', hbSectionTitle: 'Section title', hbSectionBody: 'Details', hbRemove: 'Remove', hbEmpty: 'No sections yet.', hbViewOnly: 'View only — the team owner edits this.',
     title: 'Keeping Cadence',
@@ -1459,6 +1523,12 @@ const T = {
   },
   es: {
     appearance: 'Apariencia', modeLbl: 'Modo', modeAuto: 'Auto', modeLight: 'Claro', modeDark: 'Oscuro', themeLbl: 'Tema', themeCadence: 'Cadencia', themeSunrise: 'Amanecer', themeMeadow: 'Pradera', themeTide: 'Marea', themeBloom: 'Flor',
+tcTitle: 'Tarjetas de horas', tcNav: 'Tarjetas', tcSubmit: 'Enviar tarjeta de horas',
+    tcResubmit: 'Enviar de nuevo', tcSubmitted: 'Enviada — esperando revisión',
+    tcApproved: 'Aprobada', tcChanges: 'Cambios solicitados', tcNotePh: 'Nota para el dueño (opcional)',
+    tcHours: 'Registrado', tcNone: 'Aún no hay tarjetas enviadas para esta semana.',
+    tcApprove: 'Aprobar', tcRequest: 'Pedir cambios', tcSubmitHint: 'Registra tus horas de cada día y envía la semana al dueño del equipo.',
+    tcSentOk: 'Tarjeta enviada', tcReviewedOk: 'Tarjeta actualizada', tcEditedSince: 'Editada después de enviar — envíala de nuevo.',
     hbToday: 'Hoy', hbAllDone: '¡Todo listo por hoy!', hbEditHint: 'Un elemento por línea. Las secciones marcadas como Lista se pueden tachar cada día; las demás quedan como texto.', hbChecklistLbl: 'Lista de tareas',
     hbNav: 'Manual', schedNav: 'Horario', hbEdit: 'Editar', hbDone: 'Listo', hbAddSection: '+ agregar sección', hbSectionTitle: 'Título', hbSectionBody: 'Detalles', hbRemove: 'Quitar', hbEmpty: 'Aún no hay secciones.', hbViewOnly: 'Solo lectura — el dueño del equipo lo edita.',
     title: 'Keeping Cadence',
@@ -2128,6 +2198,8 @@ function render() {
     document.getElementById('weekSummary').hidden = true;
     document.getElementById('roleHint').hidden = true;
     renderMasterDays();
+    renderTimecardBox();
+    reflectTimecardsBtn();
     return;
   }
 
@@ -2185,6 +2257,8 @@ function render() {
     `;
     days.appendChild(el);
   });
+  renderTimecardBox();
+  reflectTimecardsBtn();
   renderSavedIndicator();
 }
 
@@ -2841,6 +2915,149 @@ function setHandbookView(on) {
   });
 })();
 
+// ---- Time cards: an assigned member submits their logged week to the owner --
+let timecards = [];           // rows for the week in view (RLS scopes them)
+let timecardsLoading = false;
+
+function myTimecard() {
+  const s = activeSchedule();
+  if (!s || !isServerId(s.id)) return null;
+  return timecards.find(function (c) { return c.schedule_id === s.id; }) || null;
+}
+
+async function timecardsPull() {
+  if (!CLOUD.enabled || !authUser || !activeTeamId || !state.weekStart) { timecards = []; return; }
+  try {
+    timecards = await dapi('/timecards?select=schedule_id,week_start,status,hours,note,submitted_by,submitted_at,review_note'
+      + '&team_id=eq.' + encodeURIComponent(activeTeamId)
+      + '&week_start=eq.' + encodeURIComponent(state.weekStart)) || [];
+  } catch (e) { timecards = []; }
+  renderTimecardBox();
+  reflectTimecardsBtn();
+  if (!document.getElementById('timecardsModal').hidden) renderTimecardsModal();
+}
+
+// Member-facing card under the week.
+function renderTimecardBox() {
+  const box = document.getElementById('timecardBox');
+  if (!box) return;
+  const isMember = CLOUD.enabled && authUser && activeTeam() && !iOwnActiveTeam();
+  const sch = activeSchedule();
+  if (!isMember || !sch || !isServerId(sch.id) || state.activeId === 'master') {
+    box.hidden = true; box.innerHTML = ''; return;
+  }
+  const card = myTimecard();
+  let logged = 0;
+  activeDays().forEach(function (d) {
+    const v = parseFloat(d.actualHours);
+    if (Number.isFinite(v) && v > 0) logged += v;
+  });
+  const statusHtml = card
+    ? '<span class="tc-pill ' + escapeHtml(card.status) + '">'
+      + escapeHtml(card.status === 'approved' ? t('tcApproved') : card.status === 'changes' ? t('tcChanges') : t('tcSubmitted'))
+      + '</span>'
+    : '';
+  box.innerHTML =
+    '<div class="tc-head"><span class="tc-title">' + escapeHtml(t('tcTitle')) + '</span>' + statusHtml + '</div>'
+    + '<div class="tc-hours"><span>' + escapeHtml(t('tcHours')) + '</span><b>' + escapeHtml(fmtHoursDecimal(logged)) + '</b></div>'
+    + (card && card.review_note ? '<p class="tc-note">“' + escapeHtml(card.review_note) + '”</p>' : '')
+    + (card ? '' : '<p class="tc-hint">' + escapeHtml(t('tcSubmitHint')) + '</p>')
+    + '<input type="text" id="tcNote" class="tc-note-in" maxlength="500" placeholder="' + escapeHtml(t('tcNotePh')) + '"'
+      + ' value="' + escapeHtml((card && card.note) || '') + '">'
+    + '<button type="button" id="tcSubmitBtn" class="primary">'
+      + escapeHtml(card ? t('tcResubmit') : t('tcSubmit')) + '</button>';
+  box.hidden = false;
+}
+
+function reflectTimecardsBtn() {
+  const btn = document.getElementById('timecardsBtn');
+  if (!btn) return;
+  const show = CLOUD.enabled && authUser && activeTeamId && iOwnActiveTeam();
+  btn.hidden = !show;
+  if (!show) return;
+  const pending = timecards.filter(function (c) { return c.status === 'submitted'; }).length;
+  btn.textContent = t('tcNav') + (pending ? ' (' + pending + ')' : '');
+  btn.classList.toggle('primary', pending > 0);
+}
+
+function scheduleNameFor(id) {
+  const s = (state.schedules || []).find(function (x) { return x.id === id; });
+  return s ? s.name : '';
+}
+function memberEmailFor(uid) {
+  const m = teamMembers.find(function (x) { return x.userId === uid; });
+  return m ? m.email : '';
+}
+
+// Owner-facing review list.
+function renderTimecardsModal() {
+  const host = document.getElementById('tcList');
+  const lbl = document.getElementById('tcWeekLabel');
+  if (!host) return;
+  if (lbl) lbl.textContent = fmtWeekLabel(state.weekStart);
+  if (!timecards.length) { host.innerHTML = '<p class="hb-empty">' + escapeHtml(t('tcNone')) + '</p>'; return; }
+  host.innerHTML = timecards.map(function (c) {
+    const who = memberEmailFor(c.submitted_by);
+    return '<div class="tc-row">'
+      + '<div class="tc-row-top"><b>' + escapeHtml(scheduleNameFor(c.schedule_id) || '—') + '</b>'
+      + '<span class="tc-pill ' + escapeHtml(c.status) + '">'
+      + escapeHtml(c.status === 'approved' ? t('tcApproved') : c.status === 'changes' ? t('tcChanges') : t('tcSubmitted'))
+      + '</span></div>'
+      + (who ? '<div class="tc-who">' + escapeHtml(who) + '</div>' : '')
+      + '<div class="tc-hours"><span>' + escapeHtml(t('tcHours')) + '</span><b>'
+      + escapeHtml(fmtHoursDecimal(parseFloat(c.hours) || 0)) + '</b></div>'
+      + (c.note ? '<p class="tc-note">“' + escapeHtml(c.note) + '”</p>' : '')
+      + (c.status === 'submitted'
+          ? '<div class="tc-acts">'
+            + '<button type="button" class="tc-changes" data-s="' + escapeHtml(c.schedule_id) + '">' + escapeHtml(t('tcRequest')) + '</button>'
+            + '<button type="button" class="tc-approve primary" data-s="' + escapeHtml(c.schedule_id) + '">' + escapeHtml(t('tcApprove')) + '</button>'
+            + '</div>'
+          : '')
+      + '</div>';
+  }).join('');
+}
+
+(function () {
+  const box = document.getElementById('timecardBox');
+  if (box) box.addEventListener('click', async function (e) {
+    if (!e.target.closest('#tcSubmitBtn')) return;
+    const sch = activeSchedule();
+    if (!sch || !isServerId(sch.id)) return;
+    const btn = e.target.closest('#tcSubmitBtn');
+    btn.disabled = true;
+    try {
+      await cloudPush();  // make sure the hours being submitted are the saved ones
+      const noteEl = document.getElementById('tcNote');
+      await rpc('submit_timecard', { p_schedule_id: sch.id, p_week_start: state.weekStart,
+                                     p_note: noteEl ? noteEl.value : null });
+      await timecardsPull();
+      showToast(t('tcSentOk'));
+    } catch (err) { showToast(String(err.message || err)); }
+    btn.disabled = false;
+  });
+
+  const modal = document.getElementById('timecardsModal');
+  const openBtn = document.getElementById('timecardsBtn');
+  if (openBtn) openBtn.addEventListener('click', function () {
+    renderTimecardsModal();
+    modal.hidden = false;
+  });
+  if (modal) modal.addEventListener('click', async function (e) {
+    if (e.target.closest('[data-modal-close]')) { modal.hidden = true; return; }
+    const ap = e.target.closest('.tc-approve');
+    const ch = e.target.closest('.tc-changes');
+    const hit = ap || ch;
+    if (!hit) return;
+    hit.disabled = true;
+    try {
+      await rpc('review_timecard', { p_schedule_id: hit.dataset.s, p_week_start: state.weekStart, p_approve: !!ap });
+      await timecardsPull();
+      showToast(t('tcReviewedOk'));
+    } catch (err) { showToast(String(err.message || err)); }
+    hit.disabled = false;
+  });
+})();
+
 // PWA: offline shell + installability. Registered only on real origins so
 // file:// test runs stay untouched.
 if ('serviceWorker' in navigator &&
@@ -3092,6 +3309,7 @@ async function cloudPull() {
   // server; reflect that instead of a stale "saved locally" timestamp.
   if (!dirtyIds.size && syncStatus !== 'saving') setSyncStatus('synced');
   try { await handbookPull(); } catch (e) {}
+  try { await timecardsPull(); } catch (e) {}
   render();
   return list.length;
 }

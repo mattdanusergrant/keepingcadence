@@ -726,6 +726,105 @@ create or replace function join_by_token(p_token uuid)
 returns json language plpgsql security invoker set search_path = public as $$
 begin return kc_private._join_by_token(current_uid(), p_token); end $$;
 
+-- Time cards: an assigned member submits their week of logged hours to the
+-- team owner for review. Hours are computed server-side from the stored week,
+-- never taken from the client.
+create table if not exists timecards (
+  schedule_id      uuid not null references schedules(id) on delete cascade,
+  week_start       date not null,
+  team_id          uuid not null references teams(id) on delete cascade,
+  status           text not null default 'submitted',
+  hours            numeric(7,2) not null default 0,
+  note             text,
+  submitted_by     text not null,
+  submitted_at     timestamptz not null default now(),
+  week_updated_at  timestamptz,
+  reviewed_by      text,
+  reviewed_at      timestamptz,
+  review_note      text,
+  primary key (schedule_id, week_start),
+  constraint timecards_status_ck check (status in ('submitted', 'approved', 'changes'))
+);
+create index if not exists timecards_team_week_idx on timecards (team_id, week_start);
+
+alter table timecards enable row level security;
+drop policy if exists timecards_select on timecards;
+create policy timecards_select on timecards for select to authenticated
+  using ( team_id in (select kc_private.my_team_ids(current_uid())) );
+
+-- Sum the logged hours a week actually holds. Bad/absent values count as zero.
+create or replace function kc_private._week_logged_hours(p_schedule_id uuid, p_week_start date)
+returns numeric language sql stable security definer set search_path = public as $$
+  select coalesce(sum(
+           case when (d ->> 'actualHours') ~ '^[0-9]+(\.[0-9]+)?$'
+                then least((d ->> 'actualHours')::numeric, 24)
+                else 0 end), 0)
+  from weeks w, jsonb_array_elements(w.days) d
+  where w.schedule_id = p_schedule_id and w.week_start = p_week_start;
+$$;
+
+create or replace function kc_private._submit_timecard(p_uid text, p_schedule_id uuid,
+                                                       p_week_start date, p_note text default null)
+returns timecards language plpgsql security definer set search_path = public as $$
+  declare tid uuid; aid text; v_hours numeric; v_wupd timestamptz; r timecards;
+begin
+  if p_week_start is null then raise exception 'week required'; end if;
+  select team_id, assigned_user_id into tid, aid from schedules where id = p_schedule_id;
+  if tid is null then raise exception 'no such schedule'; end if;
+  -- only the person the schedule is assigned to submits its time card
+  if aid is null or aid <> p_uid then raise exception 'not your schedule'; end if;
+  v_hours := kc_private._week_logged_hours(p_schedule_id, p_week_start);
+  select updated_at into v_wupd from weeks where schedule_id = p_schedule_id and week_start = p_week_start;
+  insert into timecards (schedule_id, week_start, team_id, status, hours, note,
+                         submitted_by, submitted_at, week_updated_at,
+                         reviewed_by, reviewed_at, review_note)
+    values (p_schedule_id, p_week_start, tid, 'submitted', v_hours, nullif(left(p_note, 500), ''),
+            p_uid, clock_timestamp(), v_wupd, null, null, null)
+    on conflict (schedule_id, week_start) do update
+      set status = 'submitted', hours = excluded.hours, note = excluded.note,
+          submitted_by = excluded.submitted_by, submitted_at = clock_timestamp(),
+          week_updated_at = excluded.week_updated_at,
+          reviewed_by = null, reviewed_at = null, review_note = null
+    returning * into r;
+  return r;
+end $$;
+
+create or replace function kc_private._review_timecard(p_uid text, p_schedule_id uuid,
+                                                       p_week_start date, p_approve boolean,
+                                                       p_note text default null)
+returns timecards language plpgsql security definer set search_path = public as $$
+  declare tid uuid; r timecards;
+begin
+  select team_id into tid from timecards where schedule_id = p_schedule_id and week_start = p_week_start;
+  if tid is null then raise exception 'no such time card'; end if;
+  if not exists (select 1 from teams where id = tid and owner_id = p_uid) then
+    raise exception 'not your team';
+  end if;
+  update timecards
+    set status = case when p_approve then 'approved' else 'changes' end,
+        reviewed_by = p_uid, reviewed_at = clock_timestamp(),
+        review_note = nullif(left(p_note, 500), '')
+    where schedule_id = p_schedule_id and week_start = p_week_start
+    returning * into r;
+  return r;
+end $$;
+
+create or replace function submit_timecard(p_schedule_id uuid, p_week_start date, p_note text default null)
+returns timecards language plpgsql security invoker set search_path = public as $$
+begin return kc_private._submit_timecard(current_uid(), p_schedule_id, p_week_start, p_note); end $$;
+
+create or replace function review_timecard(p_schedule_id uuid, p_week_start date, p_approve boolean,
+                                           p_note text default null)
+returns timecards language plpgsql security invoker set search_path = public as $$
+begin return kc_private._review_timecard(current_uid(), p_schedule_id, p_week_start, p_approve, p_note); end $$;
+
+grant select on timecards to authenticated;
+grant execute on function submit_timecard(uuid, date, text) to authenticated;
+grant execute on function review_timecard(uuid, date, boolean, text) to authenticated;
+grant execute on function kc_private._submit_timecard(text, uuid, date, text) to authenticated;
+grant execute on function kc_private._review_timecard(text, uuid, date, boolean, text) to authenticated;
+grant execute on function kc_private._week_logged_hours(uuid, date) to authenticated;
+
 -- ===========================================================================
 -- Grants for the Data API roles. Reads = SELECT (RLS-filtered); every write goes
 -- through a public wrapper. kc_private is granted to authenticated so the
@@ -734,7 +833,7 @@ begin return kc_private._join_by_token(current_uid(), p_token); end $$;
 -- ===========================================================================
 grant usage on schema public to authenticated;
 grant usage on schema kc_private to authenticated;
-grant select on profiles, team_members, schedules, weeks, team_invites, handbooks, handbook_checks to authenticated;
+grant select on profiles, team_members, schedules, weeks, team_invites, handbooks, handbook_checks, timecards to authenticated;
 -- teams: every column except join_token (the invite secret; owners fetch it via RPC)
 grant select (id, owner_id, name, plan, created_at) on teams to authenticated;
 grant execute on all functions in schema public to authenticated;
